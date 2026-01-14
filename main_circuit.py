@@ -18,6 +18,7 @@ from circuit_noise import (
     extract_data_qubit_state,
     build_decoding_matrices,
 )
+from matrix_cache import get_or_compute_matrices
 from decoding import performMinSum_Symmetric, performOSD_enhanced
 
 
@@ -214,10 +215,9 @@ def main():
     """Run spatio-temporal simulation for all codes and error rates."""
     
     # Simulation parameters
-    num_trials = 500  # Start smaller for testing; researchers used 50000
-    num_cycles = 12
-    maxIter = 1000  # BP max iterations
-    osd_order = 7   # OSD-CS search depth
+    num_trials = 100  # Start smaller for testing; researchers used 50000
+    maxIter = 50  # BP max iterations
+    osd_order = 0   # OSD-CS search depth
     
     np.random.seed(42)
     
@@ -235,6 +235,8 @@ def main():
         Hz = code_data["Hz"]
         Lx = code_data["Lx"]
         Lz = code_data["Lz"]
+
+        num_cycles = exp["distance"]
         
         results[code_name] = {}
         
@@ -244,10 +246,10 @@ def main():
         for error_rate in exp["physicalErrorRates"]:
             print(f"\n--- p = {error_rate} ---")
             
-            # Build decoding matrices for this error rate
-            print("Building decoding matrices...")
-            matrices = build_decoding_matrices(
-                circuit_builder, Lx, Lz, error_rate, verbose=True
+            # Get or compute decoding matrices (with caching)
+            print("Loading/building decoding matrices...")
+            matrices = get_or_compute_matrices(
+                circuit_builder, Lx, Lz, error_rate, Hx, Hz, verbose=True
             )
             
             print(f"Running {num_trials} trials...")
