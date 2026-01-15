@@ -173,7 +173,7 @@ def get_or_compute_matrices(
         print(f"Computing matrices (will be cached with key: {cache_key})")
     
     matrices = build_decoding_matrices(
-        circuit_builder, Lx, Lz, error_rate, verbose=verbose
+        circuit_builder, Lx, Lz, error_rate, verbose=verbose, num_workers=8
     )
     
     # Save to cache

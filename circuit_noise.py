@@ -588,19 +588,58 @@ def compute_channel_probs_X(
     return np.array(probs)
 
 
+def _simulate_single_Z_circuit(args):
+    """Worker function for parallel Z-circuit simulation."""
+    idx, circ, noiseless_suffix, lin_order, n, Xchecks, data_qubits, Lx = args
+    
+    full_circ = circ + noiseless_suffix
+    syndrome_history, state, syndrome_map, _ = simulate_circuit_Z(
+        full_circ, lin_order, n, Xchecks
+    )
+    
+    state_data = extract_data_qubit_state(state, lin_order, data_qubits)
+    logical_syndrome = (Lx @ state_data) % 2
+    sparse_syndrome = sparsify_syndrome(syndrome_history, syndrome_map, Xchecks)
+    augmented = np.hstack([sparse_syndrome, logical_syndrome])
+    supp = tuple(np.nonzero(augmented)[0])
+    
+    return idx, supp
+
+
+def _simulate_single_X_circuit(args):
+    """Worker function for parallel X-circuit simulation."""
+    idx, circ, noiseless_suffix, lin_order, n, Zchecks, data_qubits, Lz = args
+    
+    full_circ = circ + noiseless_suffix
+    syndrome_history, state, syndrome_map, _ = simulate_circuit_X(
+        full_circ, lin_order, n, Zchecks
+    )
+    
+    state_data = extract_data_qubit_state(state, lin_order, data_qubits)
+    logical_syndrome = (Lz @ state_data) % 2
+    sparse_syndrome = sparsify_syndrome(syndrome_history, syndrome_map, Zchecks)
+    augmented = np.hstack([sparse_syndrome, logical_syndrome])
+    supp = tuple(np.nonzero(augmented)[0])
+    
+    return idx, supp
+
+
 def build_decoding_matrices(
     circuit_builder,
     Lx: np.ndarray,
     Lz: np.ndarray,
     error_rate: float,
-    verbose: bool = True
+    verbose: bool = True,
+    num_workers: int = None
 ) -> Dict[str, Any]:
     """
     Build the extended spatio-temporal decoding matrices.
     
+    PARALLELIZED for multi-core CPUs (M1 Pro optimized).
+    
     This follows the approach from Bravyi et al.:
     1. Generate all possible single-error circuits (one error at each location)
-    2. Simulate each to get its sparsified syndrome signature
+    2. Simulate each to get its sparsified syndrome signature (PARALLELIZED)
     3. Build decoding matrix where columns are distinct syndrome signatures
     4. Merge columns with identical signatures and sum their probabilities
     
@@ -610,39 +649,35 @@ def build_decoding_matrices(
         Lz: Z logical operators matrix
         error_rate: Physical error rate
         verbose: Print progress
+        num_workers: Number of parallel workers (default: 8 for M1 Pro)
         
     Returns:
-        Dictionary containing:
-        - HdecZ: Decoding matrix for Z errors (rows=syndromes, cols=error types)
-        - HdecX: Decoding matrix for X errors
-        - channel_probsZ: Channel probabilities for each Z-error column
-        - channel_probsX: Channel probabilities for each X-error column
-        - HZ_full: Full matrix including logical rows (for checking logical errors)
-        - HX_full: Full matrix including logical rows
-        - first_logical_rowZ: Row index where logical bits start in HZ_full
-        - first_logical_rowX: Row index where logical bits start in HX_full
+        Dictionary containing decoding matrices
     """
     from scipy.sparse import coo_matrix, hstack
+    from multiprocessing import Pool, cpu_count
+    import tqdm
+    
+    if num_workers is None:
+        num_workers = min(8, cpu_count())
     
     num_cycles = circuit_builder.num_cycles
     n = circuit_builder.n
     n2 = circuit_builder.n2
-    k = Lx.shape[0]  # Number of logical qubits
+    k = Lx.shape[0]
     
     lin_order = circuit_builder.lin_order
     data_qubits = circuit_builder.data_qubits
     Xchecks = circuit_builder.Xchecks
     Zchecks = circuit_builder.Zchecks
     
-    # Full circuit including 2 noiseless cycles at the end
     base_circuit = circuit_builder.get_full_circuit()
     noiseless_suffix = circuit_builder.cycle * 2
     
-    # Total syndrome measurements per check type
     total_cycles = num_cycles + 2
     num_syndrome_bits = n2 * total_cycles
     
-    # ========== Build Z-error decoding matrix (for X-check syndromes) ==========
+    # ========== Build Z-error decoding matrix ==========
     if verbose:
         print("Building Z-error decoding matrix...")
     
@@ -656,26 +691,21 @@ def build_decoding_matrices(
     for gate in base_circuit:
         gate_type = gate[0]
         
-        # Z error BEFORE MeasX
         if gate_type == 'MeasX':
             circuitsZ.append(head + [('Z', gate[1])] + tail)
             probsZ.append(error_rate)
         
-        # Move gate from tail to head
         head.append(gate)
         tail.pop(0)
         
-        # Z error AFTER PrepX
         if gate_type == 'PrepX':
             circuitsZ.append(head + [('Z', gate[1])] + tail)
             probsZ.append(error_rate)
         
-        # IDLE: Z or Y error (2/3 probability)
         if gate_type == 'IDLE':
             circuitsZ.append(head + [('Z', gate[1])] + tail)
             probsZ.append(error_rate * 2/3)
         
-        # CNOT: Z on control, Z on target, ZZ on both
         if gate_type == 'CNOT':
             control, target = gate[1], gate[2]
             circuitsZ.append(head + [('Z', control)] + tail)
@@ -687,28 +717,28 @@ def build_decoding_matrices(
     
     if verbose:
         print(f"  Generated {len(circuitsZ)} single-Z-error circuits")
+        print(f"  Simulating in parallel ({num_workers} workers)...")
     
-    # Simulate each single-error circuit and collect syndrome signatures
-    HZdict = {}  # Map from syndrome signature to list of circuit indices
+    # Parallel simulation of Z circuits
+    HZdict = {}
     
-    for idx, circ in enumerate(circuitsZ):
-        full_circ = circ + noiseless_suffix
-        syndrome_history, state, syndrome_map, _ = simulate_circuit_Z(
-            full_circ, lin_order, n, Xchecks
-        )
-        
-        # Get logical syndrome from data qubit state
-        state_data = extract_data_qubit_state(state, lin_order, data_qubits)
-        logical_syndrome = (Lx @ state_data) % 2
-        
-        # Apply syndrome sparsification (XOR consecutive measurements)
-        sparse_syndrome = sparsify_syndrome(syndrome_history, syndrome_map, Xchecks)
-        
-        # Augment with logical syndrome
-        augmented = np.hstack([sparse_syndrome, logical_syndrome])
-        
-        # Use support as key
-        supp = tuple(np.nonzero(augmented)[0])
+    args_list = [
+        (idx, circ, noiseless_suffix, lin_order, n, Xchecks, data_qubits, Lx)
+        for idx, circ in enumerate(circuitsZ)
+    ]
+    
+    with Pool(processes=num_workers) as pool:
+        if verbose:
+            results = list(tqdm.tqdm(
+                pool.imap(_simulate_single_Z_circuit, args_list, chunksize=100),
+                total=len(args_list),
+                desc="  Z-circuits"
+            ))
+        else:
+            results = pool.map(_simulate_single_Z_circuit, args_list, chunksize=100)
+    
+    # Collect results
+    for idx, supp in results:
         if supp in HZdict:
             HZdict[supp].append(idx)
         else:
@@ -724,16 +754,13 @@ def build_decoding_matrices(
     channel_probsZ = []
     
     for supp in HZdict:
-        # Full column (syndromes + logical)
         col_full = np.zeros((num_syndrome_bits + k, 1), dtype=int)
         col_full[list(supp), 0] = 1
         HZ_full_cols.append(coo_matrix(col_full))
         
-        # Decoding column (syndromes only)
         col_dec = col_full[:num_syndrome_bits, :]
         HdecZ_cols.append(coo_matrix(col_dec))
         
-        # Sum probabilities for all circuits with this signature
         prob = sum(probsZ[i] for i in HZdict[supp])
         channel_probsZ.append(prob)
     
@@ -741,7 +768,7 @@ def build_decoding_matrices(
     HdecZ = hstack(HdecZ_cols).toarray()
     channel_probsZ = np.array(channel_probsZ)
     
-    # ========== Build X-error decoding matrix (for Z-check syndromes) ==========
+    # ========== Build X-error decoding matrix ==========
     if verbose:
         print("Building X-error decoding matrix...")
     
@@ -754,7 +781,6 @@ def build_decoding_matrices(
     for gate in base_circuit:
         gate_type = gate[0]
         
-        # X error BEFORE MeasZ
         if gate_type == 'MeasZ':
             circuitsX.append(head + [('X', gate[1])] + tail)
             probsX.append(error_rate)
@@ -762,17 +788,14 @@ def build_decoding_matrices(
         head.append(gate)
         tail.pop(0)
         
-        # X error AFTER PrepZ
         if gate_type == 'PrepZ':
             circuitsX.append(head + [('X', gate[1])] + tail)
             probsX.append(error_rate)
         
-        # IDLE: X or Y error
         if gate_type == 'IDLE':
             circuitsX.append(head + [('X', gate[1])] + tail)
             probsX.append(error_rate * 2/3)
         
-        # CNOT: X on control, X on target, XX on both
         if gate_type == 'CNOT':
             control, target = gate[1], gate[2]
             circuitsX.append(head + [('X', control)] + tail)
@@ -784,22 +807,27 @@ def build_decoding_matrices(
     
     if verbose:
         print(f"  Generated {len(circuitsX)} single-X-error circuits")
+        print(f"  Simulating in parallel ({num_workers} workers)...")
     
+    # Parallel simulation of X circuits
     HXdict = {}
     
-    for idx, circ in enumerate(circuitsX):
-        full_circ = circ + noiseless_suffix
-        syndrome_history, state, syndrome_map, _ = simulate_circuit_X(
-            full_circ, lin_order, n, Zchecks
-        )
-        
-        state_data = extract_data_qubit_state(state, lin_order, data_qubits)
-        logical_syndrome = (Lz @ state_data) % 2
-        
-        sparse_syndrome = sparsify_syndrome(syndrome_history, syndrome_map, Zchecks)
-        augmented = np.hstack([sparse_syndrome, logical_syndrome])
-        
-        supp = tuple(np.nonzero(augmented)[0])
+    args_list = [
+        (idx, circ, noiseless_suffix, lin_order, n, Zchecks, data_qubits, Lz)
+        for idx, circ in enumerate(circuitsX)
+    ]
+    
+    with Pool(processes=num_workers) as pool:
+        if verbose:
+            results = list(tqdm.tqdm(
+                pool.imap(_simulate_single_X_circuit, args_list, chunksize=100),
+                total=len(args_list),
+                desc="  X-circuits"
+            ))
+        else:
+            results = pool.map(_simulate_single_X_circuit, args_list, chunksize=100)
+    
+    for idx, supp in results:
         if supp in HXdict:
             HXdict[supp].append(idx)
         else:
