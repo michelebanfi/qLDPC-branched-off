@@ -203,7 +203,7 @@ For `T` cycles, each check produces `T` syndrome measurements:
 
 ```
 Syndrome vector = [cycle_0_syndromes | cycle_1_syndromes | ... | cycle_T-1_syndromes]
-                  └──── n/2 bits ────┘└──── n/2 bits ────┘    └──── n/2 bits ────┘
+                  └──── n/2 bits ────┘└──── n/2 bits ────┘     └────  n/2 bits  ────┘
 ```
 
 The two noiseless cycles at the end ensure we capture the final syndrome state.

@@ -325,8 +325,8 @@ def main():
     """Run spatio-temporal simulation for all codes and error rates."""
     
     # Simulation parameters
-    num_trials = 100  # Start smaller for testing; researchers used 50000
-    maxIter = 50  # BP max iterations
+    num_trials = 1  # Start smaller for testing; researchers used 50000
+    maxIter = 1  # BP max iterations
     osd_order = 0  # OSD-CS search depth
     num_workers = 8  # M1 Pro performance cores
     

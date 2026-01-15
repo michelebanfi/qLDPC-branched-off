@@ -588,8 +588,99 @@ def compute_channel_probs_X(
     return np.array(probs)
 
 
+# Global state for efficient parallel processing (set by initializer)
+_worker_shared_data = None
+
+
+def _init_worker_Z(base_circuit, noiseless_suffix, lin_order, n, Xchecks, data_qubits, Lx, error_specs):
+    """Initialize worker with shared data for Z-error simulation."""
+    global _worker_shared_data
+    _worker_shared_data = {
+        'base_circuit': base_circuit,
+        'noiseless_suffix': noiseless_suffix,
+        'lin_order': lin_order,
+        'n': n,
+        'Xchecks': Xchecks,
+        'data_qubits': data_qubits,
+        'Lx': Lx,
+        'error_specs': error_specs,  # List of (position, error_tuple)
+    }
+
+
+def _init_worker_X(base_circuit, noiseless_suffix, lin_order, n, Zchecks, data_qubits, Lz, error_specs):
+    """Initialize worker with shared data for X-error simulation."""
+    global _worker_shared_data
+    _worker_shared_data = {
+        'base_circuit': base_circuit,
+        'noiseless_suffix': noiseless_suffix,
+        'lin_order': lin_order,
+        'n': n,
+        'Zchecks': Zchecks,
+        'data_qubits': data_qubits,
+        'Lz': Lz,
+        'error_specs': error_specs,
+    }
+
+
+def _simulate_Z_from_spec(idx):
+    """
+    Worker function for Z-circuit simulation using error specification.
+    
+    Instead of receiving the full circuit, we only receive the index and
+    reconstruct the circuit from the error spec.
+    """
+    global _worker_shared_data
+    d = _worker_shared_data
+    
+    # Get error specification: (position_in_circuit, error_tuple)
+    pos, error_tuple = d['error_specs'][idx]
+    
+    # Build circuit: base[:pos] + [error] + base[pos:]
+    base = d['base_circuit']
+    circ = base[:pos] + [error_tuple] + base[pos:]
+    full_circ = circ + d['noiseless_suffix']
+    
+    syndrome_history, state, syndrome_map, _ = simulate_circuit_Z(
+        full_circ, d['lin_order'], d['n'], d['Xchecks']
+    )
+    
+    state_data = extract_data_qubit_state(state, d['lin_order'], d['data_qubits'])
+    logical_syndrome = (d['Lx'] @ state_data) % 2
+    sparse_syndrome = sparsify_syndrome(syndrome_history, syndrome_map, d['Xchecks'])
+    augmented = np.hstack([sparse_syndrome, logical_syndrome])
+    supp = tuple(np.nonzero(augmented)[0])
+    
+    return idx, supp
+
+
+def _simulate_X_from_spec(idx):
+    """
+    Worker function for X-circuit simulation using error specification.
+    """
+    global _worker_shared_data
+    d = _worker_shared_data
+    
+    pos, error_tuple = d['error_specs'][idx]
+    
+    base = d['base_circuit']
+    circ = base[:pos] + [error_tuple] + base[pos:]
+    full_circ = circ + d['noiseless_suffix']
+    
+    syndrome_history, state, syndrome_map, _ = simulate_circuit_X(
+        full_circ, d['lin_order'], d['n'], d['Zchecks']
+    )
+    
+    state_data = extract_data_qubit_state(state, d['lin_order'], d['data_qubits'])
+    logical_syndrome = (d['Lz'] @ state_data) % 2
+    sparse_syndrome = sparsify_syndrome(syndrome_history, syndrome_map, d['Zchecks'])
+    augmented = np.hstack([sparse_syndrome, logical_syndrome])
+    supp = tuple(np.nonzero(augmented)[0])
+    
+    return idx, supp
+
+
 def _simulate_single_Z_circuit(args):
-    """Worker function for parallel Z-circuit simulation."""
+    """Worker function for parallel Z-circuit simulation (legacy, for compatibility)."""
     idx, circ, noiseless_suffix, lin_order, n, Xchecks, data_qubits, Lx = args
     
     full_circ = circ + noiseless_suffix
@@ -607,7 +698,7 @@ def _simulate_single_Z_circuit(args):
 
 
 def _simulate_single_X_circuit(args):
-    """Worker function for parallel X-circuit simulation."""
+    """Worker function for parallel X-circuit simulation (legacy, for compatibility)."""
     idx, circ, noiseless_suffix, lin_order, n, Zchecks, data_qubits, Lz = args
     
     full_circ = circ + noiseless_suffix
@@ -681,61 +772,66 @@ def build_decoding_matrices(
     if verbose:
         print("Building Z-error decoding matrix...")
     
-    # Generate all single-Z-error circuits
-    circuitsZ = []
+    # Generate error specifications: (position, error_tuple) instead of full circuits
+    # This dramatically reduces pickle overhead in multiprocessing
+    error_specsZ = []
     probsZ = []
     
-    head = []
-    tail = base_circuit.copy()
-    
+    pos = 0  # Position counter
     for gate in base_circuit:
         gate_type = gate[0]
         
         if gate_type == 'MeasX':
-            circuitsZ.append(head + [('Z', gate[1])] + tail)
+            # Z error BEFORE measurement
+            error_specsZ.append((pos, ('Z', gate[1])))
             probsZ.append(error_rate)
         
-        head.append(gate)
-        tail.pop(0)
-        
         if gate_type == 'PrepX':
-            circuitsZ.append(head + [('Z', gate[1])] + tail)
+            # Z error AFTER prep (so position is after the gate)
+            error_specsZ.append((pos + 1, ('Z', gate[1])))
             probsZ.append(error_rate)
         
         if gate_type == 'IDLE':
-            circuitsZ.append(head + [('Z', gate[1])] + tail)
+            # Z error after idle
+            error_specsZ.append((pos + 1, ('Z', gate[1])))
             probsZ.append(error_rate * 2/3)
         
         if gate_type == 'CNOT':
             control, target = gate[1], gate[2]
-            circuitsZ.append(head + [('Z', control)] + tail)
+            # Errors after CNOT
+            error_specsZ.append((pos + 1, ('Z', control)))
             probsZ.append(error_rate * 4/15)
-            circuitsZ.append(head + [('Z', target)] + tail)
+            error_specsZ.append((pos + 1, ('Z', target)))
             probsZ.append(error_rate * 4/15)
-            circuitsZ.append(head + [('ZZ', control, target)] + tail)
+            error_specsZ.append((pos + 1, ('ZZ', control, target)))
             probsZ.append(error_rate * 4/15)
+        
+        pos += 1
     
     if verbose:
-        print(f"  Generated {len(circuitsZ)} single-Z-error circuits")
+        print(f"  Generated {len(error_specsZ)} single-Z-error specifications")
         print(f"  Simulating in parallel ({num_workers} workers)...")
     
-    # Parallel simulation of Z circuits
+    # Parallel simulation using shared state (no full circuit pickling!)
+    from multiprocessing import get_context
+    
     HZdict = {}
     
-    args_list = [
-        (idx, circ, noiseless_suffix, lin_order, n, Xchecks, data_qubits, Lx)
-        for idx, circ in enumerate(circuitsZ)
-    ]
-    
-    with Pool(processes=num_workers) as pool:
+    # Use spawn context for M1 compatibility
+    ctx = get_context('spawn')
+    with ctx.Pool(
+        processes=num_workers,
+        initializer=_init_worker_Z,
+        initargs=(base_circuit, noiseless_suffix, lin_order, n, Xchecks, data_qubits, Lx, error_specsZ)
+    ) as pool:
         if verbose:
             results = list(tqdm.tqdm(
-                pool.imap(_simulate_single_Z_circuit, args_list, chunksize=100),
-                total=len(args_list),
+                pool.imap(_simulate_Z_from_spec, range(len(error_specsZ)), chunksize=500),
+                total=len(error_specsZ),
                 desc="  Z-circuits"
             ))
         else:
-            results = pool.map(_simulate_single_Z_circuit, args_list, chunksize=100)
+            results = pool.map(_simulate_Z_from_spec, range(len(error_specsZ)), chunksize=500)
     
     # Collect results
     for idx, supp in results:
@@ -772,60 +868,61 @@ def build_decoding_matrices(
     if verbose:
         print("Building X-error decoding matrix...")
     
-    circuitsX = []
+    # Generate error specifications for X errors
+    error_specsX = []
     probsX = []
     
-    head = []
-    tail = base_circuit.copy()
-    
+    pos = 0
     for gate in base_circuit:
         gate_type = gate[0]
         
         if gate_type == 'MeasZ':
-            circuitsX.append(head + [('X', gate[1])] + tail)
+            # X error BEFORE measurement
+            error_specsX.append((pos, ('X', gate[1])))
             probsX.append(error_rate)
         
-        head.append(gate)
-        tail.pop(0)
-        
         if gate_type == 'PrepZ':
-            circuitsX.append(head + [('X', gate[1])] + tail)
+            # X error AFTER prep
+            error_specsX.append((pos + 1, ('X', gate[1])))
             probsX.append(error_rate)
         
         if gate_type == 'IDLE':
-            circuitsX.append(head + [('X', gate[1])] + tail)
+            # X error after idle
+            error_specsX.append((pos + 1, ('X', gate[1])))
             probsX.append(error_rate * 2/3)
         
         if gate_type == 'CNOT':
             control, target = gate[1], gate[2]
-            circuitsX.append(head + [('X', control)] + tail)
+            # Errors after CNOT
+            error_specsX.append((pos + 1, ('X', control)))
             probsX.append(error_rate * 4/15)
-            circuitsX.append(head + [('X', target)] + tail)
+            error_specsX.append((pos + 1, ('X', target)))
             probsX.append(error_rate * 4/15)
-            circuitsX.append(head + [('XX', control, target)] + tail)
+            error_specsX.append((pos + 1, ('XX', control, target)))
             probsX.append(error_rate * 4/15)
+        
+        pos += 1
     
     if verbose:
-        print(f"  Generated {len(circuitsX)} single-X-error circuits")
+        print(f"  Generated {len(error_specsX)} single-X-error specifications")
         print(f"  Simulating in parallel ({num_workers} workers)...")
     
-    # Parallel simulation of X circuits
+    # Parallel simulation using shared state
     HXdict = {}
     
-    args_list = [
-        (idx, circ, noiseless_suffix, lin_order, n, Zchecks, data_qubits, Lz)
-        for idx, circ in enumerate(circuitsX)
-    ]
-    
-    with Pool(processes=num_workers) as pool:
+    with ctx.Pool(
+        processes=num_workers,
+        initializer=_init_worker_X,
+        initargs=(base_circuit, noiseless_suffix, lin_order, n, Zchecks, data_qubits, Lz, error_specsX)
+    ) as pool:
         if verbose:
             results = list(tqdm.tqdm(
-                pool.imap(_simulate_single_X_circuit, args_list, chunksize=100),
-                total=len(args_list),
+                pool.imap(_simulate_X_from_spec, range(len(error_specsX)), chunksize=500),
+                total=len(error_specsX),
                 desc="  X-circuits"
             ))
         else:
-            results = pool.map(_simulate_single_X_circuit, args_list, chunksize=100)
+            results = pool.map(_simulate_X_from_spec, range(len(error_specsX)), chunksize=500)
     
     for idx, supp in results:
         if supp in HXdict:
