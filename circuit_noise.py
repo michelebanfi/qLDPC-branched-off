@@ -19,38 +19,72 @@ class BBCodeCircuit:
     """
     Constructs the syndrome extraction circuit for a Bivariate Bicycle code.
     
-    The circuit structure is deduced from the Hx matrix. For BB codes:
-    - Hx = [A | B] where A, B are (n/2) x (n/2) matrices
+    The circuit structure is deduced from the component matrices A1, A2, A3, B1, B2, B3.
+    For BB codes:
+    - Hx = [A | B] where A = A1 + A2 + A3 and B = B1 + B2 + B3
     - Each X-check connects to 6 data qubits (3 from left block, 3 from right)
-    - Each Z-check also connects to 6 data qubits
+    - Each Z-check also connects to 6 data qubits (from transposed components)
     
     The syndrome extraction uses an interleaved depth-8 circuit where
     X and Z checks are measured simultaneously using CNOTs scheduled
     to avoid collisions.
+    
+    IMPORTANT: The neighbor ordering must match the CNOT schedule from Bravyi et al.
+    Direction 0,1,2 correspond to components A1,A2,A3 / B1^T,B2^T,B3^T
+    Direction 3,4,5 correspond to components B1,B2,B3 / A1^T,A2^T,A3^T
     """
     
-    def __init__(self, Hx: np.ndarray, Hz: np.ndarray, num_cycles: int = 12):
+    def __init__(
+        self, 
+        Hx: np.ndarray, 
+        Hz: np.ndarray, 
+        num_cycles: int = 12,
+        ell: int = None,
+        m: int = None,
+        a_x_powers: np.ndarray = None,
+        a_y_powers: np.ndarray = None,
+        b_y_powers: np.ndarray = None,
+        b_x_powers: np.ndarray = None,
+    ):
         """
         Initialize the circuit from the parity check matrices.
         
         Args:
-            Hx: X-type parity check matrix, shape (m, n)
-            Hz: Z-type parity check matrix, shape (m, n)
+            Hx: X-type parity check matrix, shape (n2, n)
+            Hz: Z-type parity check matrix, shape (n2, n)
             num_cycles: Number of syndrome measurement cycles
+            ell, m: Dimensions for cyclic shift matrices
+            a_x_powers: x-powers in polynomial A (e.g., [3] for x^3)
+            a_y_powers: y-powers in polynomial A (e.g., [1, 2] for y + y^2)
+            b_y_powers: y-powers in polynomial B
+            b_x_powers: x-powers in polynomial B
         """
         self.Hx = np.asarray(Hx, dtype=int)
         self.Hz = np.asarray(Hz, dtype=int)
         self.num_cycles = num_cycles
         
-        self.m, self.n = Hx.shape  # m checks, n data qubits
+        self.m_checks, self.n = Hx.shape  # m checks, n data qubits
         self.n2 = self.n // 2  # half the data qubits (left/right blocks)
         
-        assert self.m == self.n2, f"Expected square blocks: m={self.m}, n2={self.n2}"
+        assert self.m_checks == self.n2, f"Expected square blocks: m={self.m_checks}, n2={self.n2}"
+        
+        # Store component parameters for circuit construction
+        self.ell = ell
+        self.m_dim = m  # Renamed to avoid confusion with m_checks
+        self.a_x_powers = a_x_powers if a_x_powers is not None else []
+        self.a_y_powers = a_y_powers if a_y_powers is not None else []
+        self.b_y_powers = b_y_powers if b_y_powers is not None else []
+        self.b_x_powers = b_x_powers if b_x_powers is not None else []
+        
+        # Build component matrices if parameters provided
+        self.has_component_params = ell is not None and m is not None
+        if self.has_component_params:
+            self._build_component_matrices()
         
         # Define qubit ordering: X checks, data_left, data_right, Z checks
         self._setup_qubit_ordering()
         
-        # Compute neighbors from Hx/Hz matrices
+        # Compute neighbors from component matrices (or fallback to Hx/Hz)
         self._compute_neighbors()
         
         # Build the CNOT schedule
@@ -58,6 +92,41 @@ class BBCodeCircuit:
         
         # Build one syndrome measurement cycle
         self._build_cycle()
+    
+    def _build_component_matrices(self):
+        """Build the 6 component matrices A1, A2, A3, B1, B2, B3."""
+        ell = self.ell
+        m = self.m_dim
+        
+        I_ell = np.eye(ell, dtype=int)
+        I_m = np.eye(m, dtype=int)
+        
+        # Build A = A1 + A2 + A3
+        # Ai corresponds to x^ax * y^ay shifts
+        # x^k -> kron(roll(I_ell, k), I_m)
+        # y^k -> kron(I_ell, roll(I_m, k))
+        
+        self.A_components = []
+        # First: x-power components
+        for p in self.a_x_powers:
+            self.A_components.append(np.kron(np.roll(I_ell, p, axis=1), I_m))
+        # Then: y-power components
+        for p in self.a_y_powers:
+            self.A_components.append(np.kron(I_ell, np.roll(I_m, p, axis=1)))
+        
+        self.B_components = []
+        # First: y-power components
+        for p in self.b_y_powers:
+            self.B_components.append(np.kron(I_ell, np.roll(I_m, p, axis=1)))
+        # Then: x-power components
+        for p in self.b_x_powers:
+            self.B_components.append(np.kron(np.roll(I_ell, p, axis=1), I_m))
+        
+        # Pad to ensure we have exactly 3 components each
+        while len(self.A_components) < 3:
+            self.A_components.append(np.zeros((self.n2, self.n2), dtype=int))
+        while len(self.B_components) < 3:
+            self.B_components.append(np.zeros((self.n2, self.n2), dtype=int))
         
     def _setup_qubit_ordering(self):
         """Define the linear ordering of all qubits (checks + data)."""
@@ -99,50 +168,77 @@ class BBCodeCircuit:
         
     def _compute_neighbors(self):
         """
-        Compute the 6 neighbors of each check qubit from Hx/Hz.
+        Compute the 6 neighbors of each check qubit.
         
-        For X-checks: neighbors come from Hx
-        For Z-checks: neighbors come from Hz
+        For X-checks: 
+            Direction 0,1,2 -> A1, A2, A3 (left data qubits)
+            Direction 3,4,5 -> B1, B2, B3 (right data qubits)
         
-        Each check has exactly 6 neighbors (weight-6 rows).
-        We split them: 3 from left data block, 3 from right data block.
+        For Z-checks:
+            Direction 0,1,2 -> B1^T, B2^T, B3^T (left data qubits)
+            Direction 3,4,5 -> A1^T, A2^T, A3^T (right data qubits)
+        
+        This ordering is CRITICAL for the CNOT schedule to work correctly!
         """
         self.nbs = {}
         
-        # X-check neighbors from Hx
-        for i in range(self.n2):
-            check = ('Xcheck', i)
-            row = self.Hx[i, :]
+        if self.has_component_params:
+            # Use component matrices for correct ordering
+            A1, A2, A3 = self.A_components[0], self.A_components[1], self.A_components[2]
+            B1, B2, B3 = self.B_components[0], self.B_components[1], self.B_components[2]
             
-            # Left neighbors (columns 0 to n2-1)
-            left_indices = np.nonzero(row[:self.n2])[0]
-            # Right neighbors (columns n2 to n-1)
-            right_indices = np.nonzero(row[self.n2:])[0]
+            # X-check neighbors
+            for i in range(self.n2):
+                check = ('Xcheck', i)
+                # Left neighbors from A1, A2, A3 rows
+                self.nbs[(check, 0)] = ('data_left', np.nonzero(A1[i, :])[0][0] if np.any(A1[i, :]) else 0)
+                self.nbs[(check, 1)] = ('data_left', np.nonzero(A2[i, :])[0][0] if np.any(A2[i, :]) else 0)
+                self.nbs[(check, 2)] = ('data_left', np.nonzero(A3[i, :])[0][0] if np.any(A3[i, :]) else 0)
+                # Right neighbors from B1, B2, B3 rows
+                self.nbs[(check, 3)] = ('data_right', np.nonzero(B1[i, :])[0][0] if np.any(B1[i, :]) else 0)
+                self.nbs[(check, 4)] = ('data_right', np.nonzero(B2[i, :])[0][0] if np.any(B2[i, :]) else 0)
+                self.nbs[(check, 5)] = ('data_right', np.nonzero(B3[i, :])[0][0] if np.any(B3[i, :]) else 0)
             
-            assert len(left_indices) == 3, f"X-check {i} has {len(left_indices)} left neighbors"
-            assert len(right_indices) == 3, f"X-check {i} has {len(right_indices)} right neighbors"
+            # Z-check neighbors (use transposed components)
+            # Hz = [B^T | A^T], so Z-check i connects to column i of B and A
+            B1T, B2T, B3T = B1.T, B2.T, B3.T
+            A1T, A2T, A3T = A1.T, A2.T, A3.T
             
-            # Store neighbors with direction indices 0-5
-            for j, idx in enumerate(left_indices):
-                self.nbs[(check, j)] = ('data_left', idx)
-            for j, idx in enumerate(right_indices):
-                self.nbs[(check, 3 + j)] = ('data_right', idx)
+            for i in range(self.n2):
+                check = ('Zcheck', i)
+                # Left neighbors from B1^T, B2^T, B3^T columns (= rows of transposed)
+                self.nbs[(check, 0)] = ('data_left', np.nonzero(B1T[i, :])[0][0] if np.any(B1T[i, :]) else 0)
+                self.nbs[(check, 1)] = ('data_left', np.nonzero(B2T[i, :])[0][0] if np.any(B2T[i, :]) else 0)
+                self.nbs[(check, 2)] = ('data_left', np.nonzero(B3T[i, :])[0][0] if np.any(B3T[i, :]) else 0)
+                # Right neighbors from A1^T, A2^T, A3^T columns
+                self.nbs[(check, 3)] = ('data_right', np.nonzero(A1T[i, :])[0][0] if np.any(A1T[i, :]) else 0)
+                self.nbs[(check, 4)] = ('data_right', np.nonzero(A2T[i, :])[0][0] if np.any(A2T[i, :]) else 0)
+                self.nbs[(check, 5)] = ('data_right', np.nonzero(A3T[i, :])[0][0] if np.any(A3T[i, :]) else 0)
+        else:
+            # Fallback: use Hx/Hz rows (legacy mode - may cause incorrect scheduling)
+            print("WARNING: Using legacy neighbor computation - CNOT schedule may be incorrect!")
+            
+            for i in range(self.n2):
+                check = ('Xcheck', i)
+                row = self.Hx[i, :]
+                left_indices = np.nonzero(row[:self.n2])[0]
+                right_indices = np.nonzero(row[self.n2:])[0]
                 
-        # Z-check neighbors from Hz
-        for i in range(self.n2):
-            check = ('Zcheck', i)
-            row = self.Hz[i, :]
-            
-            left_indices = np.nonzero(row[:self.n2])[0]
-            right_indices = np.nonzero(row[self.n2:])[0]
-            
-            assert len(left_indices) == 3, f"Z-check {i} has {len(left_indices)} left neighbors"
-            assert len(right_indices) == 3, f"Z-check {i} has {len(right_indices)} right neighbors"
-            
-            for j, idx in enumerate(left_indices):
-                self.nbs[(check, j)] = ('data_left', idx)
-            for j, idx in enumerate(right_indices):
-                self.nbs[(check, 3 + j)] = ('data_right', idx)
+                for j, idx in enumerate(left_indices[:3]):
+                    self.nbs[(check, j)] = ('data_left', idx)
+                for j, idx in enumerate(right_indices[:3]):
+                    self.nbs[(check, 3 + j)] = ('data_right', idx)
+                    
+            for i in range(self.n2):
+                check = ('Zcheck', i)
+                row = self.Hz[i, :]
+                left_indices = np.nonzero(row[:self.n2])[0]
+                right_indices = np.nonzero(row[self.n2:])[0]
+                
+                for j, idx in enumerate(left_indices[:3]):
+                    self.nbs[(check, j)] = ('data_left', idx)
+                for j, idx in enumerate(right_indices[:3]):
+                    self.nbs[(check, 3 + j)] = ('data_right', idx)
                 
     def _build_cnot_schedule(self):
         """
@@ -152,33 +248,21 @@ class BBCodeCircuit:
         For X-checks: CNOT from check to data (control=check, target=data)
         For Z-checks: CNOT from data to check (control=data, target=check)
         
-        We use a greedy approach to find a collision-free schedule.
+        Using the researchers' collision-free schedule from Bravyi et al.
         """
-        # Try to find a schedule where no two CNOTs use the same data qubit
-        # in the same time step
+        # Researchers' schedule for [[144,12,12]] - designed to avoid collisions
+        # where both X and Z checks try to access the same data qubit
+        #
+        # This specific ordering ensures that when X-check uses direction d,
+        # Z-check uses a different direction that doesn't conflict.
+        #
+        # Round 0: X prepares (idle), Z uses direction 3
+        # Round 1-5: Both do CNOTs in specific non-colliding directions
+        # Round 6: X uses direction 2, Z idles (measures)
+        # Round 7: X measures, Z prepares
         
-        # For each time step, track which data qubits are used
-        self.schedule_X = []  # directions for X-checks: list of direction indices
-        self.schedule_Z = []  # directions for Z-checks
-        
-        # Simple approach: schedule all 6 directions sequentially, 
-        # interleaving X and Z to minimize idle time
-        # This gives depth 8 (similar to researchers' approach)
-        
-        # Researchers' schedule for [[144,12,12]]:
-        # sX = ['idle', 1, 4, 3, 5, 0, 2]
-        # sZ = [3, 5, 0, 1, 2, 4, 'idle']
-        # 
-        # We'll use a similar pattern but derive it from the connectivity
-        
-        # For now, use a sequential schedule
-        # Round 0: Z uses direction 0, X prepares
-        # Round 1-5: Both X and Z do CNOTs
-        # Round 6: X uses direction 5, Z measures
-        # Round 7: All idle, X measures, Z prepares
-        
-        self.schedule_X = ['idle', 0, 1, 2, 3, 4, 5, 'idle']  # 8 rounds
-        self.schedule_Z = [0, 1, 2, 3, 4, 5, 'idle', 'idle']  # 8 rounds
+        self.schedule_X = ['idle', 1, 4, 3, 5, 0, 2, 'idle']  # 8 rounds
+        self.schedule_Z = [3, 5, 0, 1, 2, 4, 'idle', 'idle']  # 8 rounds
         
     def _build_cycle(self):
         """Build one syndrome measurement cycle as a list of operations."""

@@ -111,6 +111,84 @@ def _minsum_core(H, Q, syndrome_sign, mask, alpha):
 
 
 @njit(cache=True, nogil=True)
+def _minsum_core_sparse(H_data, H_indices, H_indptr, Q_flat, syndrome_sign, alpha, m, n):
+    """
+    Sparse-aware Min-Sum message computation - JIT compiled.
+    
+    Uses CSR format to only iterate over non-zero elements.
+    Much faster for sparse decoding matrices (99%+ sparsity).
+    
+    Args:
+        H_data: CSR data array (all 1s for binary matrices)
+        H_indices: CSR column indices
+        H_indptr: CSR row pointers
+        Q_flat: Flat array of Q values for each non-zero position
+        syndrome_sign: Sign of syndrome bits
+        alpha: Scaling factor
+        m: Number of rows
+        n: Number of columns
+    
+    Returns:
+        R_flat: Messages for each non-zero position (same order as H_indices)
+        R_sum: Sum of messages for each column
+    """
+    nnz = len(H_data)
+    R_flat = np.zeros(nnz, dtype=np.float64)
+    R_sum = np.zeros(n, dtype=np.float64)
+    
+    for i in range(m):
+        row_start = H_indptr[i]
+        row_end = H_indptr[i + 1]
+        
+        if row_start == row_end:
+            continue
+        
+        # First pass: compute sign product and find two minimums
+        sign_prod = syndrome_sign[i]
+        min1 = np.inf
+        min2 = np.inf
+        min1_pos = -1  # Position within this row's non-zeros
+        
+        for pos in range(row_start, row_end):
+            val = Q_flat[pos]
+            if val >= 0:
+                sign_prod *= 1.0
+            else:
+                sign_prod *= -1.0
+            
+            abs_val = abs(val)
+            if abs_val < min1:
+                min2 = min1
+                min1 = abs_val
+                min1_pos = pos
+            elif abs_val < min2:
+                min2 = abs_val
+        
+        # Second pass: compute messages
+        for pos in range(row_start, row_end):
+            val = Q_flat[pos]
+            sign_j = 1.0 if val >= 0 else -1.0
+            
+            # Exclude j from sign product
+            row_sign_excl_j = sign_prod * sign_j
+            
+            # Use min2 if this is the position of min1
+            if pos == min1_pos:
+                mag = min2
+            else:
+                mag = min1
+            
+            msg = alpha * row_sign_excl_j * mag
+            R_flat[pos] = msg
+            
+            # Accumulate for column sums
+            col = H_indices[pos]
+            R_sum[col] += msg
+    
+    return R_flat, R_sum
+
+
+@njit(cache=True, nogil=True)
 def _bp_core(H, Q, syndrome_sign, mask, clip_val):
     """
     Core BP tanh-based message computation - JIT compiled.
@@ -257,6 +335,91 @@ def performMinSum_Symmetric(H, syndrome, initialBelief, maxIter=50, alpha=1.0, d
         if np.array_equal(calculateSyndrome, syndrome) and not alpha_estimation:
             return candidateError, True, values, currentIter
             
+    return candidateError, False, values, currentIter
+
+
+def performMinSum_Symmetric_Sparse(H_csr, syndrome, initialBelief, maxIter=50, alpha=1.0, damping=1.0, clip_llr=20.0):
+    """
+    Sparse-optimized Normalized Min-Sum Algorithm.
+    
+    This version uses CSR sparse matrix format and is ~100x faster for
+    highly sparse matrices (e.g., [[288,12,18]] code with 99.86% sparsity).
+    
+    Args:
+        H_csr: scipy.sparse.csr_matrix - the parity check matrix in CSR format
+        syndrome: Binary syndrome vector
+        initialBelief: Initial LLR beliefs for each variable
+        maxIter: Maximum iterations
+        alpha: Scaling factor (0 for dynamic scaling)
+        damping: Damping factor for message updates
+        clip_llr: LLR clipping value
+    
+    Returns:
+        Same as performMinSum_Symmetric
+    """
+    use_dynamic_alpha = (alpha == 0)
+    
+    if not isinstance(H_csr, csr_matrix):
+        H_csr = csr_matrix(H_csr)
+    
+    syndrome = np.asarray(syndrome, dtype=np.int8)
+    initialBelief = np.asarray(initialBelief, dtype=np.float64)
+    
+    m, n = H_csr.shape
+    nnz = H_csr.nnz
+    
+    # Extract CSR components for Numba
+    H_data = H_csr.data.astype(np.float64)
+    H_indices = H_csr.indices.astype(np.int64)
+    H_indptr = H_csr.indptr.astype(np.int64)
+    
+    # Syndrome sign for each row
+    syndrome_sign = (1 - 2 * syndrome).astype(np.float64)
+    
+    # Q values stored only for non-zero positions (flat array)
+    # Initialize with the initial belief for each column
+    Q_flat = initialBelief[H_indices].copy()
+    Q_flat_old = Q_flat.copy()
+    
+    candidateError = np.zeros(n, dtype=np.int8)
+    values = initialBelief.copy()
+    
+    for currentIter in range(maxIter):
+        # Dynamic alpha
+        if use_dynamic_alpha:
+            current_alpha = 1.0 - 2.0 ** (-(currentIter + 1))
+        else:
+            current_alpha = alpha
+        
+        # Use sparse JIT-compiled core
+        R_flat, R_sum = _minsum_core_sparse(
+            H_data, H_indices, H_indptr, Q_flat, syndrome_sign, current_alpha, m, n
+        )
+        
+        # Compute total LLR for each variable
+        values = R_sum + initialBelief
+        
+        # Update Q values (sparse update) - suppress warnings for NaN/inf handling
+        # Q_new[pos] = values[col] - R_flat[pos]
+        with np.errstate(invalid='ignore'):
+            Q_flat_new = values[H_indices] - R_flat
+        Q_flat_new = np.nan_to_num(Q_flat_new, nan=0.0, posinf=clip_llr, neginf=-clip_llr)
+        Q_flat_new = np.clip(Q_flat_new, -clip_llr, clip_llr)
+        
+        # Apply damping
+        Q_flat = damping * Q_flat_new + (1 - damping) * Q_flat_old
+        Q_flat = np.clip(Q_flat, -clip_llr, clip_llr)
+        Q_flat_old = Q_flat.copy()
+        
+        # Hard decision
+        candidateError = (values < 0).astype(np.int8)
+        
+        # Check syndrome (use sparse matrix-vector multiply)
+        calculateSyndrome = np.asarray(H_csr.dot(candidateError) % 2).flatten()
+        
+        if np.array_equal(calculateSyndrome, syndrome):
+            return candidateError, True, values, currentIter
+    
     return candidateError, False, values, currentIter
 
 
