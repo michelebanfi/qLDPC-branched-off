@@ -156,3 +156,138 @@ def syndrome_check(H_data, H_indices, H_indptr, candidate, m):
             s ^= candidate[H_indices[idx]]
         syndrome[i] = s
     return syndrome
+
+
+@njit(cache=True, nogil=True)
+def minsum_decoder_full(
+    H_indices, H_indptr, 
+    syndrome, initialBelief,
+    maxIter, use_dynamic_alpha, alpha_val,
+    damping, clip_llr
+):
+    """
+    Fully JIT-compiled Min-Sum decoder.
+    
+    Runs the entire decoding loop in compiled code to eliminate Python overhead.
+    """
+    m = len(H_indptr) - 1
+    n = len(initialBelief)
+    nnz = len(H_indices)
+    
+    syndrome_sign = np.empty(m, dtype=np.float64)
+    for i in range(m):
+        syndrome_sign[i] = 1.0 - 2.0 * syndrome[i]
+    
+    # Pre-allocate all buffers
+    Q_flat = np.empty(nnz, dtype=np.float64)
+    Q_flat_old = np.empty(nnz, dtype=np.float64)
+    R_flat = np.empty(nnz, dtype=np.float64)
+    R_sum = np.zeros(n, dtype=np.float64)
+    values = np.empty(n, dtype=np.float64)
+    candidateError = np.zeros(n, dtype=np.int8)
+    
+    # Initialize Q messages from initial beliefs
+    for idx in range(nnz):
+        Q_flat[idx] = initialBelief[H_indices[idx]]
+        Q_flat_old[idx] = Q_flat[idx]
+    
+    final_iter = maxIter - 1
+    converged = False
+    
+    for currentIter in range(maxIter):
+        # Compute alpha
+        if use_dynamic_alpha:
+            current_alpha = 1.0 - 2.0 ** (-(currentIter + 1))
+        else:
+            current_alpha = alpha_val
+        
+        # Reset R_sum
+        for j in range(n):
+            R_sum[j] = 0.0
+        
+        # Min-Sum core: compute R messages
+        for i in range(m):
+            row_start = H_indptr[i]
+            row_end = H_indptr[i + 1]
+            if row_start == row_end:
+                continue
+            
+            # First pass: compute sign product and find min1, min2
+            sign_prod = syndrome_sign[i]
+            min1 = np.inf
+            min2 = np.inf
+            min1_pos = -1
+            
+            for pos in range(row_start, row_end):
+                val = Q_flat[pos]
+                if val >= 0:
+                    sign_prod *= 1.0
+                else:
+                    sign_prod *= -1.0
+                abs_val = abs(val)
+                if abs_val < min1:
+                    min2 = min1
+                    min1 = abs_val
+                    min1_pos = pos
+                elif abs_val < min2:
+                    min2 = abs_val
+            
+            # Second pass: compute R messages
+            for pos in range(row_start, row_end):
+                val = Q_flat[pos]
+                sign_j = 1.0 if val >= 0 else -1.0
+                row_sign_excl_j = sign_prod * sign_j
+                mag = min2 if pos == min1_pos else min1
+                msg = current_alpha * row_sign_excl_j * mag
+                R_flat[pos] = msg
+                R_sum[H_indices[pos]] += msg
+        
+        # Update values and Q messages
+        for j in range(n):
+            values[j] = R_sum[j] + initialBelief[j]
+        
+        # Update Q messages with damping and clipping
+        for idx in range(nnz):
+            col = H_indices[idx]
+            q_new = values[col] - R_flat[idx]
+            
+            # Handle NaN/Inf
+            if q_new != q_new:  # NaN check
+                q_new = 0.0
+            elif q_new > clip_llr:
+                q_new = clip_llr
+            elif q_new < -clip_llr:
+                q_new = -clip_llr
+            
+            # Damping
+            q_damped = damping * q_new + (1.0 - damping) * Q_flat_old[idx]
+            
+            # Clip again
+            if q_damped > clip_llr:
+                q_damped = clip_llr
+            elif q_damped < -clip_llr:
+                q_damped = -clip_llr
+            
+            Q_flat[idx] = q_damped
+            Q_flat_old[idx] = q_damped
+        
+        # Compute candidate error and check syndrome
+        for j in range(n):
+            candidateError[j] = 1 if values[j] < 0 else 0
+        
+        # Check syndrome
+        syndrome_ok = True
+        for i in range(m):
+            s = 0
+            for idx in range(H_indptr[i], H_indptr[i + 1]):
+                s ^= candidateError[H_indices[idx]]
+            if s != syndrome[i]:
+                syndrome_ok = False
+                break
+        
+        if syndrome_ok:
+            final_iter = currentIter
+            converged = True
+            break
+    
+    return candidateError, converged, values, final_iter

@@ -34,6 +34,9 @@ def main():
         bb_params = {k: data[k] for k in ["ell", "m", "a_x_powers", "a_y_powers", "b_y_powers", "b_x_powers"] if k in data}
         
         results[code_name] = {}
+        
+        # At this point since it's re-calculated later, we can simply move this function in the if statement
+        # below
         cb = BBCodeCircuit(Hx, Hz, num_cycles=exp["distance"], **bb_params)
         
         for p in exp["physicalErrorRates"]:

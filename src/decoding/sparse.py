@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.sparse import csr_matrix
-from .kernels import minsum_core_sparse, syndrome_check
+from .kernels import minsum_core_sparse, syndrome_check, minsum_decoder_full
 
 def performMinSum_Symmetric_Sparse(
     H_csr, 
@@ -12,7 +12,37 @@ def performMinSum_Symmetric_Sparse(
     clip_llr=20.0
 ):
     """
-    Highly optimized Sparse Min-Sum Algorithm using CSR components.
+    Highly optimized Sparse Min-Sum Algorithm using fully JIT-compiled decoder.
+    """
+    use_dynamic_alpha = (alpha == 0)
+    syndrome = np.asarray(syndrome, dtype=np.int8)
+    initialBelief = np.asarray(initialBelief, dtype=np.float64)
+    
+    H_indices = H_csr.indices.astype(np.int32)
+    H_indptr = H_csr.indptr.astype(np.int32)
+    
+    # Use fully JIT-compiled decoder
+    candidateError, converged, values, final_iter = minsum_decoder_full(
+        H_indices, H_indptr,
+        syndrome, initialBelief,
+        maxIter, use_dynamic_alpha, alpha,
+        damping, clip_llr
+    )
+    
+    return candidateError, converged, values, final_iter
+
+
+def performMinSum_Symmetric_Sparse_Legacy(
+    H_csr, 
+    syndrome, 
+    initialBelief, 
+    maxIter=100, 
+    alpha=1.0, 
+    damping=1.0, 
+    clip_llr=20.0
+):
+    """
+    Legacy implementation with Python loop (kept for reference/debugging).
     """
     use_dynamic_alpha = (alpha == 0)
     syndrome = np.asarray(syndrome, dtype=np.int8)

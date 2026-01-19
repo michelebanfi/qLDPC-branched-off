@@ -6,7 +6,12 @@ from typing import Dict, Any
 
 from ..codes.bb_code import BBCodeCircuit
 from ..noise.model import generate_noisy_circuit
-from ..noise.simulation import simulate_circuit_Z, simulate_circuit_X, sparsify_syndrome, extract_data_qubit_state
+from ..noise.simulation import (
+    simulate_circuit_Z, simulate_circuit_X, 
+    sparsify_syndrome, extract_data_qubit_state,
+    run_trial_fast
+)
+from ..noise.compiled import CompiledCircuit
 from ..noise.builder import build_decoding_matrices
 from ..decoding.dense import performMinSum_Symmetric
 from ..decoding.sparse import performMinSum_Symmetric_Sparse
@@ -15,10 +20,86 @@ from ..decoding.osd import performOSD_enhanced
 _shared_data = None
 
 def _warmup_jit():
+    """Warm up JIT compilation for decoders and circuit simulation."""
+    from ..noise.kernels import simulate_circuit_Z_jit, simulate_circuit_X_jit, generate_noisy_circuit_jit
+    
+    # Warm up decoder
     H = np.random.randint(0, 2, (10, 20)).astype(np.float64)
     syndrome = np.random.randint(0, 2, 10).astype(np.int8)
     belief = np.random.randn(20).astype(np.float64)
     performMinSum_Symmetric(H, syndrome, belief, maxIter=2)
+    
+    # Warm up circuit simulation kernels
+    dummy_ops = np.array([1, 4, 2], dtype=np.int32)  # CNOT, MeasX, PrepX
+    dummy_q1 = np.array([0, 1, 2], dtype=np.int32)
+    dummy_q2 = np.array([1, -1, -1], dtype=np.int32)
+    dummy_check_idx = np.array([1], dtype=np.int32)
+    dummy_check_ptr = np.array([0, 1], dtype=np.int32)
+    
+    simulate_circuit_Z_jit(dummy_ops, dummy_q1, dummy_q2, 5, dummy_check_idx, dummy_check_ptr, 10)
+    simulate_circuit_X_jit(dummy_ops, dummy_q1, dummy_q2, 5, dummy_check_idx, dummy_check_ptr, 10)
+    
+    # Warm up noisy circuit generation
+    dummy_rand = np.random.random(3)
+    dummy_paulis = np.random.randint(0, 3, 3, dtype=np.int32)
+    dummy_two = np.random.randint(0, 15, 3, dtype=np.int32)
+    out_ops = np.empty(10, dtype=np.int32)
+    out_q1 = np.empty(10, dtype=np.int32)
+    out_q2 = np.empty(10, dtype=np.int32)
+    generate_noisy_circuit_jit(dummy_ops, dummy_q1, dummy_q2, 0.01, dummy_rand, dummy_paulis, dummy_two, out_ops, out_q1, out_q2)
+
+
+def _run_single_trial_fast(trial_idx, shared_data):
+    """Run a single trial using JIT-compiled simulation (fast path)."""
+    np.random.seed(shared_data['base_seed'] + trial_idx)
+    
+    compiled = shared_data['compiled_circuit']
+    
+    # Run JIT-compiled simulation
+    sparse_z, true_z, sparse_x, true_x = run_trial_fast(
+        compiled,
+        shared_data['error_rate'],
+        shared_data['Lx'],
+        shared_data['Lz']
+    )
+    
+    # Z decoding
+    if shared_data['use_sparse']:
+        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric_Sparse(
+            shared_data['HdecZ_csr'], sparse_z, shared_data['llrs_z'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+        )
+    else:
+        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric(
+            shared_data['HdecZ'], sparse_z, shared_data['llrs_z'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+        )
+    
+    if not succ_z:
+        det_z = performOSD_enhanced(shared_data['HdecZ'], sparse_z, llrs_z, det_z, order=shared_data['osd_order'])
+    
+    dec_z = (shared_data['HZ_logical'] @ det_z) % 2
+    z_err = not np.array_equal(dec_z, true_z)
+    
+    # X decoding
+    if shared_data['use_sparse']:
+        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric_Sparse(
+            shared_data['HdecX_csr'], sparse_x, shared_data['llrs_x'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+        )
+    else:
+        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric(
+            shared_data['HdecX'], sparse_x, shared_data['llrs_x'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+        )
+    
+    if not succ_x:
+        det_x = performOSD_enhanced(shared_data['HdecX'], sparse_x, llrs_x, det_x, order=shared_data['osd_order'])
+    
+    dec_x = (shared_data['HX_logical'] @ det_x) % 2
+    x_err = not np.array_equal(dec_x, true_x)
+    
+    return (z_err, x_err, z_err or x_err)
 
 def _run_single_trial(trial_idx, shared_data):
     np.random.seed(shared_data['base_seed'] + trial_idx)
@@ -66,12 +147,18 @@ def _worker_init(shared_data_dict):
     _warmup_jit()
 
 def _worker_task(trial_idx):
+    """Use fast JIT path by default."""
+    return _run_single_trial_fast(trial_idx, _shared_data)
+
+def _worker_task_slow(trial_idx):
+    """Fallback to pure Python path."""
     return _run_single_trial(trial_idx, _shared_data)
 
 def run_simulation(
     Hx, Hz, Lx, Lz, error_rate, num_trials=1000, num_cycles=12,
     maxIter=50, osd_order=0, use_dynamic_alpha=True,
     precomputed_matrices=None, num_workers=None, base_seed=None,
+    use_jit=True,  # New parameter to enable/disable JIT
     **bb_params
 ):
     if num_workers is None: num_workers = min(8, cpu_count())
@@ -85,6 +172,19 @@ def run_simulation(
         llrs_x = np.clip(np.nan_to_num(np.log((1 - matrices['channel_probsX']) / matrices['channel_probsX'])), -50, 50)
     
     use_sparse = matrices['HdecZ'].shape[1] > 5000
+    
+    # Build compiled circuit for JIT path
+    compiled_circuit = None
+    if use_jit:
+        compiled_circuit = CompiledCircuit(
+            base_circuit=cb.get_full_circuit(),
+            noiseless_suffix=cb.cycle * 2,
+            lin_order=cb.lin_order,
+            data_qubits=cb.data_qubits,
+            Xchecks=cb.Xchecks,
+            Zchecks=cb.Zchecks
+        )
+    
     shared_data = {
         'base_circuit': cb.get_full_circuit(), 'noiseless_suffix': cb.cycle * 2,
         'error_rate': error_rate, 'lin_order': cb.lin_order, 'data_qubits': cb.data_qubits,
@@ -99,11 +199,15 @@ def run_simulation(
         'base_seed': base_seed, 'use_sparse': use_sparse,
         'HdecZ_csr': csr_matrix(matrices['HdecZ']) if use_sparse else None,
         'HdecX_csr': csr_matrix(matrices['HdecX']) if use_sparse else None,
+        'compiled_circuit': compiled_circuit,  # Add compiled circuit
     }
+    
+    # Select worker function based on JIT flag
+    worker_fn = _worker_task if use_jit else _worker_task_slow
     
     ctx = get_context('spawn')
     with ctx.Pool(processes=num_workers, initializer=_worker_init, initargs=(shared_data,)) as pool:
-        results = list(tqdm.tqdm(pool.imap(_worker_task, range(num_trials)), total=num_trials, desc=f"p={error_rate}"))
+        results = list(tqdm.tqdm(pool.imap(worker_fn, range(num_trials)), total=num_trials, desc=f"p={error_rate}"))
         
     z_errs, x_errs, total_errs = zip(*results)
     return {
