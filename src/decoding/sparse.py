@@ -19,7 +19,9 @@ def performMinSum_Symmetric_Sparse(
     initialBelief = np.asarray(initialBelief, dtype=np.float64)
     
     m, n = H_csr.shape
-    H_data = H_csr.data.astype(np.int8)
+    H_data = H_csr.data
+    if H_data.dtype != np.int8:
+        H_data = H_data.astype(np.int8)
     H_indices = H_csr.indices
     H_indptr = H_csr.indptr
     

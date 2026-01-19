@@ -32,14 +32,14 @@ def _run_single_trial(trial_idx, shared_data):
     sparse_z = sparsify_syndrome(syn_z, map_z, shared_data['Xchecks'])
     
     if shared_data['use_sparse']:
-        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric_Sparse(shared_data['HdecZ_csr'], sparse_z, shared_data['llrs_z'].copy(), maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric_Sparse(shared_data['HdecZ_csr'], sparse_z, shared_data['llrs_z'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
     else:
-        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric(shared_data['HdecZ'], sparse_z, shared_data['llrs_z'].copy(), maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric(shared_data['HdecZ'], sparse_z, shared_data['llrs_z'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
     
     if not succ_z:
         det_z = performOSD_enhanced(shared_data['HdecZ'], sparse_z, llrs_z, det_z, order=shared_data['osd_order'])
     
-    dec_z = ((shared_data['HZ_full'] @ det_z) % 2)[shared_data['first_logical_rowZ']:shared_data['first_logical_rowZ'] + shared_data['k']]
+    dec_z = (shared_data['HZ_logical'] @ det_z) % 2
     z_err = not np.array_equal(dec_z, true_z)
     
     # X decoding
@@ -48,14 +48,14 @@ def _run_single_trial(trial_idx, shared_data):
     sparse_x = sparsify_syndrome(syn_x, map_x, shared_data['Zchecks'])
     
     if shared_data['use_sparse']:
-        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric_Sparse(shared_data['HdecX_csr'], sparse_x, shared_data['llrs_x'].copy(), maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric_Sparse(shared_data['HdecX_csr'], sparse_x, shared_data['llrs_x'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
     else:
-        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric(shared_data['HdecX'], sparse_x, shared_data['llrs_x'].copy(), maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric(shared_data['HdecX'], sparse_x, shared_data['llrs_x'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
     
     if not succ_x:
         det_x = performOSD_enhanced(shared_data['HdecX'], sparse_x, llrs_x, det_x, order=shared_data['osd_order'])
     
-    dec_x = ((shared_data['HX_full'] @ det_x) % 2)[shared_data['first_logical_rowX']:shared_data['first_logical_rowX'] + shared_data['k']]
+    dec_x = (shared_data['HX_logical'] @ det_x) % 2
     x_err = not np.array_equal(dec_x, true_x)
     
     return (z_err, x_err, z_err or x_err)
@@ -89,9 +89,11 @@ def run_simulation(
         'base_circuit': cb.get_full_circuit(), 'noiseless_suffix': cb.cycle * 2,
         'error_rate': error_rate, 'lin_order': cb.lin_order, 'data_qubits': cb.data_qubits,
         'n': cb.n, 'k': Lx.shape[0], 'Xchecks': cb.Xchecks, 'Zchecks': cb.Zchecks,
-        'Lx': Lx, 'Lz': Lz, 'HdecZ': np.ascontiguousarray(matrices['HdecZ']),
-        'HdecX': np.ascontiguousarray(matrices['HdecX']), 'llrs_z': llrs_z, 'llrs_x': llrs_x,
+        'Lx': Lx, 'Lz': Lz, 'HdecZ': np.asarray(matrices['HdecZ'], dtype=np.float64, order='C'),
+        'HdecX': np.asarray(matrices['HdecX'], dtype=np.float64, order='C'), 'llrs_z': llrs_z, 'llrs_x': llrs_x,
         'HZ_full': np.ascontiguousarray(matrices['HZ_full']), 'HX_full': np.ascontiguousarray(matrices['HX_full']),
+        'HZ_logical': np.ascontiguousarray(matrices['HZ_full'][matrices['first_logical_rowZ']:matrices['first_logical_rowZ'] + Lx.shape[0]]),
+        'HX_logical': np.ascontiguousarray(matrices['HX_full'][matrices['first_logical_rowX']:matrices['first_logical_rowX'] + Lx.shape[0]]),
         'first_logical_rowZ': matrices['first_logical_rowZ'], 'first_logical_rowX': matrices['first_logical_rowX'],
         'alpha': 0 if use_dynamic_alpha else 1.0, 'maxIter': maxIter, 'osd_order': osd_order,
         'base_seed': base_seed, 'use_sparse': use_sparse,
