@@ -1,0 +1,1 @@
+Before running code, check weather or not a virtual environment is present. If it is present, activate it before running code.
