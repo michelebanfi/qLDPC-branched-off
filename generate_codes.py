@@ -81,16 +81,11 @@ code_definitions = [
         "distance": 18,
         "ell": 12, "m": 12,
         "a_x_powers": [3],
-        "a_y_powers": [2, 7],    # Note: different from others
+        "a_y_powers": [2, 7],
         "b_y_powers": [3],
         "b_x_powers": [1, 2],
     },
 ]
-
-
-def generate_cyclic_shift(size, power):
-    """Generate a cyclic shift matrix: (I rolled by power positions)."""
-    return np.roll(np.eye(size, dtype=int), power, axis=1)
 
 
 def verify_code_structure(code_def):
@@ -125,11 +120,11 @@ def verify_code_structure(code_def):
     Hx_original = np.array(code_def["code"].matrix_x)
     
     if np.array_equal(Hx_reconstructed, Hx_original):
-        print(f"  ✓ {code_def['name']}: Component matrices verified")
+        print(f"{code_def['name']}: Component matrices verified")
         return True
     else:
-        print(f"  ✗ {code_def['name']}: Component matrices DON'T match!")
-        print(f"    Difference: {np.sum(Hx_reconstructed != Hx_original)} elements")
+        print(f"{code_def['name']}: Component matrices DON'T match!")
+        print(f"Difference: {np.sum(Hx_reconstructed != Hx_original)} elements")
         return False
 
 

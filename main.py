@@ -1,18 +1,20 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from src.simulation.engine import run_simulation
-from src.utils.caching import compute_cache_key, load_matrices, save_matrices
+
 from src.codes.bb_code import BBCodeCircuit
+from src.simulation.engine import run_simulation
 from src.noise.builder import build_decoding_matrices
+from src.utils.plotting import plot_simulation_results
+from src.utils.caching import compute_cache_key, load_matrices, save_matrices
 
 # Experiment configuration
 experiments = [
-    {"code": "[[72, 12, 6]]", "name": "72", "physicalErrorRates": [0.005, 0.004, 0.003, 0.002, 0.001], "distance": 6},
-    {"code": "[[90, 8, 10]]", "name": "90", "physicalErrorRates": [0.005, 0.004, 0.003, 0.002, 0.001], "distance": 10},
-    {"code": "[[108, 8, 10]]", "name": "108", "physicalErrorRates": [0.005, 0.004, 0.003, 0.002, 0.001], "distance": 10},
-    {"code": "[[144, 12, 12]]", "name": "144", "physicalErrorRates": [0.005, 0.004, 0.003, 0.002, 0.001], "distance": 12},
-    {"code": "[[288, 12, 18]]", "name": "288", "physicalErrorRates": [0.004, 0.003, 0.002, 0.001], "distance": 18},
+    {"code": "[[72, 12, 6]]", "name": "72", "physicalErrorRates": [0.006, 0.005, 0.004, 0.003, 0.0018, 0.001, 0.0005, 0.00018], "distance": 6},
+    {"code": "[[90, 8, 10]]", "name": "90", "physicalErrorRates": [0.006, 0.005, 0.004, 0.003, 0.0018, 0.001, 0.0005], "distance": 10},
+    {"code": "[[108, 8, 10]]", "name": "108", "physicalErrorRates": [0.006, 0.005, 0.004, 0.003, 0.0018, 0.0001, 0.0005], "distance": 10},
+    {"code": "[[144, 12, 12]]", "name": "144", "physicalErrorRates": [0.006, 0.005, 0.004, 0.003, 0.0018, 0.0001], "distance": 12},
+    {"code": "[[288, 12, 18]]", "name": "288", "physicalErrorRates": [0.006, 0.005, 0.004, 0.0035], "distance": 18},
 ]
 
 def main():
@@ -51,7 +53,6 @@ def main():
             print(f"  LER: {res['logical_error_rate']:.4e}")
 
     # Plotting
-    from src.utils.plotting import plot_simulation_results
     plot_simulation_results(results, "simulation_results.png")
 
 if __name__ == "__main__":
