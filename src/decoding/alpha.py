@@ -63,6 +63,12 @@ def estimate_alpha_alvarado(
     true_0 = np.concatenate(true_0)
     true_1 = np.concatenate(true_1)
 
+    true_0 = true_0[np.isfinite(true_0)]
+    true_1 = true_1[np.isfinite(true_1)]
+
+    if true_0.size == 0 or true_1.size == 0:
+        raise ValueError("No finite samples for alpha estimation")
+
     min_val = min(true_0.min(), true_1.min())
     max_val = max(true_0.max(), true_1.max())
     hist_range = (min_val, max_val)
