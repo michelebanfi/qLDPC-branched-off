@@ -50,7 +50,7 @@ def main():
             
             res = run_simulation(
                 Hx, Hz, Lx, Lz, p, num_cycles=exp["distance"],
-                maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices, alpha_mode="alvarado"
+                maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices, alpha_mode="alvarado",
                 num_workers=num_workers, target_logical_errors=target_logical_errors,
                 max_trials=max_trials, **bb_params
             )
