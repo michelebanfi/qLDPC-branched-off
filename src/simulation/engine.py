@@ -1,5 +1,5 @@
 import numpy as np
-import tqdm
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TaskProgressColumn
 from multiprocessing import cpu_count, get_context
 from scipy.sparse import csr_matrix
 from typing import Dict, Any
@@ -218,23 +218,35 @@ def run_simulation(
     ctx = get_context('spawn')
     with ctx.Pool(processes=num_workers, initializer=_worker_init, initargs=(shared_data,)) as pool:
         iterator = pool.imap(worker_fn, range(max_trials))
-        pbar_total = max_trials if max_trials is not None else None
-        pbar = tqdm.tqdm(total=pbar_total, desc=f"p={error_rate}")
-        for z_err, x_err, total_err in iterator:
-            trials_run += 1
-            if z_err:
-                z_errs_count += 1
-            if x_err:
-                x_errs_count += 1
-            if total_err:
-                total_errs_count += 1
+        progress = Progress(
+            TextColumn("p={task.fields[p]:.4g} | logical={task.fields[errors]}/{task.fields[target]}", justify="left"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+        )
+        with progress:
+            task_id = progress.add_task(
+                "simulate",
+                total=max_trials,
+                p=error_rate,
+                errors=0,
+                target=(target_logical_errors if stop_on_errors else "∞"),
+            )
+            for z_err, x_err, total_err in iterator:
+                trials_run += 1
+                if z_err:
+                    z_errs_count += 1
+                if x_err:
+                    x_errs_count += 1
+                if total_err:
+                    total_errs_count += 1
 
-            pbar.update(1)
+                progress.advance(task_id, 1)
+                progress.update(task_id, errors=total_errs_count)
 
-            if stop_on_errors and total_errs_count >= target_logical_errors:
-                pool.terminate()
-                break
-        pbar.close()
+                if stop_on_errors and total_errs_count >= target_logical_errors:
+                    pool.terminate()
+                    break
     
     return {
         'logical_error_rate': total_errs_count / max(1, trials_run),
