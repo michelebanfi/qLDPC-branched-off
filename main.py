@@ -17,7 +17,8 @@ experiments = [
 ]
 
 def main():
-    num_trials = 1000
+    target_logical_errors = 30
+    max_trials = 5000
     maxIter = 100
     osd_order = 7
     num_workers = 8
@@ -47,12 +48,15 @@ def main():
                 matrices = build_decoding_matrices(cb, Lx, Lz, p, num_workers=num_workers)
                 save_matrices(cache_dir, key, matrices)
             
-            res = run_simulation(Hx, Hz, Lx, Lz, p, num_trials=num_trials, num_cycles=exp["distance"],
-                                 maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices, 
-                                 num_workers=num_workers, **bb_params)
+            res = run_simulation(
+                Hx, Hz, Lx, Lz, p, num_cycles=exp["distance"],
+                maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices,
+                num_workers=num_workers, target_logical_errors=target_logical_errors,
+                max_trials=max_trials, **bb_params
+            )
             
             results[code_name][p] = res
-            print(f"  LER: {res['logical_error_rate']:.4e}")
+            print(f"  LER: {res['logical_error_rate']:.4e} (trials={res['num_trials']}, logical_errors={res['logical_errors']})")
 
     # Plotting
     plot_simulation_results(results, "simulation_results.png")

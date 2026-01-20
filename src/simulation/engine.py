@@ -159,6 +159,7 @@ def run_simulation(
     maxIter=50, osd_order=0, use_dynamic_alpha=True,
     precomputed_matrices=None, num_workers=None, base_seed=None,
     use_jit=True,  # New parameter to enable/disable JIT
+    target_logical_errors=None, max_trials=None,
     **bb_params
 ):
     if num_workers is None: num_workers = min(8, cpu_count())
@@ -205,14 +206,40 @@ def run_simulation(
     # Select worker function based on JIT flag
     worker_fn = _worker_task if use_jit else _worker_task_slow
     
+    if max_trials is None:
+        max_trials = num_trials if num_trials is not None else 1000000
+    stop_on_errors = target_logical_errors is not None and target_logical_errors > 0
+
+    z_errs_count = 0
+    x_errs_count = 0
+    total_errs_count = 0
+    trials_run = 0
+
     ctx = get_context('spawn')
     with ctx.Pool(processes=num_workers, initializer=_worker_init, initargs=(shared_data,)) as pool:
-        results = list(tqdm.tqdm(pool.imap(worker_fn, range(num_trials)), total=num_trials, desc=f"p={error_rate}"))
-        
-    z_errs, x_errs, total_errs = zip(*results)
+        iterator = pool.imap(worker_fn, range(max_trials))
+        pbar_total = max_trials if max_trials is not None else None
+        pbar = tqdm.tqdm(total=pbar_total, desc=f"p={error_rate}")
+        for z_err, x_err, total_err in iterator:
+            trials_run += 1
+            if z_err:
+                z_errs_count += 1
+            if x_err:
+                x_errs_count += 1
+            if total_err:
+                total_errs_count += 1
+
+            pbar.update(1)
+
+            if stop_on_errors and total_errs_count >= target_logical_errors:
+                pool.terminate()
+                break
+        pbar.close()
+    
     return {
-        'logical_error_rate': np.mean(total_errs),
-        'z_logical_error_rate': np.mean(z_errs),
-        'x_logical_error_rate': np.mean(x_errs),
-        'num_trials': num_trials,
+        'logical_error_rate': total_errs_count / max(1, trials_run),
+        'z_logical_error_rate': z_errs_count / max(1, trials_run),
+        'x_logical_error_rate': x_errs_count / max(1, trials_run),
+        'num_trials': trials_run,
+        'logical_errors': total_errs_count,
     }
