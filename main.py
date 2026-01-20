@@ -18,8 +18,8 @@ experiments = [
 
 def main():
     target_logical_errors = 30
-    max_trials = 5000
-    maxIter = 100
+    max_trials = 100000
+    maxIter = 200
     osd_order = 7
     num_workers = 8
     cache_dir = "matrix_cache"
