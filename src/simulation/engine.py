@@ -15,6 +15,7 @@ from ..noise.compiled import CompiledCircuit
 from ..noise.builder import build_decoding_matrices
 from ..decoding.dense import performMinSum_Symmetric
 from ..decoding.sparse import performMinSum_Symmetric_Sparse
+from ..decoding.alpha import estimate_alpha_alvarado
 from ..decoding.osd import performOSD_enhanced
 
 _shared_data = None
@@ -67,12 +68,14 @@ def _run_single_trial_fast(trial_idx, shared_data):
     if shared_data['use_sparse']:
         det_z, succ_z, llrs_z, _ = performMinSum_Symmetric_Sparse(
             shared_data['HdecZ_csr'], sparse_z, shared_data['llrs_z'],
-            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_z'],
+            alpha_mode=shared_data['alpha_mode']
         )
     else:
         det_z, succ_z, llrs_z, _ = performMinSum_Symmetric(
             shared_data['HdecZ'], sparse_z, shared_data['llrs_z'],
-            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_z'],
+            alpha_mode=shared_data['alpha_mode']
         )
     
     if not succ_z:
@@ -85,12 +88,14 @@ def _run_single_trial_fast(trial_idx, shared_data):
     if shared_data['use_sparse']:
         det_x, succ_x, llrs_x, _ = performMinSum_Symmetric_Sparse(
             shared_data['HdecX_csr'], sparse_x, shared_data['llrs_x'],
-            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_x'],
+            alpha_mode=shared_data['alpha_mode']
         )
     else:
         det_x, succ_x, llrs_x, _ = performMinSum_Symmetric(
             shared_data['HdecX'], sparse_x, shared_data['llrs_x'],
-            maxIter=shared_data['maxIter'], alpha=shared_data['alpha']
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_x'],
+            alpha_mode=shared_data['alpha_mode']
         )
     
     if not succ_x:
@@ -113,9 +118,17 @@ def _run_single_trial(trial_idx, shared_data):
     sparse_z = sparsify_syndrome(syn_z, map_z, shared_data['Xchecks'])
     
     if shared_data['use_sparse']:
-        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric_Sparse(shared_data['HdecZ_csr'], sparse_z, shared_data['llrs_z'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric_Sparse(
+            shared_data['HdecZ_csr'], sparse_z, shared_data['llrs_z'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_z'],
+            alpha_mode=shared_data['alpha_mode']
+        )
     else:
-        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric(shared_data['HdecZ'], sparse_z, shared_data['llrs_z'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_z, succ_z, llrs_z, _ = performMinSum_Symmetric(
+            shared_data['HdecZ'], sparse_z, shared_data['llrs_z'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_z'],
+            alpha_mode=shared_data['alpha_mode']
+        )
     
     if not succ_z:
         det_z = performOSD_enhanced(shared_data['HdecZ'], sparse_z, llrs_z, det_z, order=shared_data['osd_order'])
@@ -129,9 +142,17 @@ def _run_single_trial(trial_idx, shared_data):
     sparse_x = sparsify_syndrome(syn_x, map_x, shared_data['Zchecks'])
     
     if shared_data['use_sparse']:
-        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric_Sparse(shared_data['HdecX_csr'], sparse_x, shared_data['llrs_x'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric_Sparse(
+            shared_data['HdecX_csr'], sparse_x, shared_data['llrs_x'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_x'],
+            alpha_mode=shared_data['alpha_mode']
+        )
     else:
-        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric(shared_data['HdecX'], sparse_x, shared_data['llrs_x'], maxIter=shared_data['maxIter'], alpha=shared_data['alpha'])
+        det_x, succ_x, llrs_x, _ = performMinSum_Symmetric(
+            shared_data['HdecX'], sparse_x, shared_data['llrs_x'],
+            maxIter=shared_data['maxIter'], alpha=shared_data['alpha_x'],
+            alpha_mode=shared_data['alpha_mode']
+        )
     
     if not succ_x:
         det_x = performOSD_enhanced(shared_data['HdecX'], sparse_x, llrs_x, det_x, order=shared_data['osd_order'])
@@ -157,6 +178,8 @@ def _worker_task_slow(trial_idx):
 def run_simulation(
     Hx, Hz, Lx, Lz, error_rate, num_trials=1000, num_cycles=12,
     maxIter=50, osd_order=0, use_dynamic_alpha=True,
+    alpha_mode=None, alvarado_alpha=None,
+    alpha_estimation_trials=5000, alpha_estimation_bins=50,
     precomputed_matrices=None, num_workers=None, base_seed=None,
     use_jit=True,  # New parameter to enable/disable JIT
     target_logical_errors=None, max_trials=None,
@@ -173,6 +196,44 @@ def run_simulation(
         llrs_x = np.clip(np.nan_to_num(np.log((1 - matrices['channel_probsX']) / matrices['channel_probsX'])), -50, 50)
     
     use_sparse = matrices['HdecZ'].shape[1] > 5000
+
+    if alpha_mode is None:
+        alpha_mode = "dynamical" if use_dynamic_alpha else "alvarado"
+
+    if alpha_mode == "alvarado":
+        if alvarado_alpha is None:
+            alpha_z = estimate_alpha_alvarado(
+                matrices['HdecZ'], error_rate,
+                trials=alpha_estimation_trials,
+                bins=alpha_estimation_bins,
+            )
+            alpha_x = estimate_alpha_alvarado(
+                matrices['HdecX'], error_rate,
+                trials=alpha_estimation_trials,
+                bins=alpha_estimation_bins,
+            )
+            print(
+                f"Alvarado alpha (estimated) for p={error_rate}: "
+                f"alpha_z={alpha_z:.6g}, alpha_x={alpha_x:.6g}"
+            )
+        elif isinstance(alvarado_alpha, (list, tuple, np.ndarray)) and len(alvarado_alpha) == 2:
+            alpha_z, alpha_x = float(alvarado_alpha[0]), float(alvarado_alpha[1])
+            print(
+                f"Alvarado alpha (provided) for p={error_rate}: "
+                f"alpha_z={alpha_z:.6g}, alpha_x={alpha_x:.6g}"
+            )
+        else:
+            alpha_z = float(alvarado_alpha)
+            alpha_x = float(alvarado_alpha)
+            print(
+                f"Alvarado alpha (provided) for p={error_rate}: "
+                f"alpha_z={alpha_z:.6g}, alpha_x={alpha_x:.6g}"
+            )
+    elif alpha_mode == "dynamical":
+        alpha_z = 1.0
+        alpha_x = 1.0
+    else:
+        raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
     
     # Build compiled circuit for JIT path
     compiled_circuit = None
@@ -196,7 +257,8 @@ def run_simulation(
         'HZ_logical': np.ascontiguousarray(matrices['HZ_full'][matrices['first_logical_rowZ']:matrices['first_logical_rowZ'] + Lx.shape[0]]),
         'HX_logical': np.ascontiguousarray(matrices['HX_full'][matrices['first_logical_rowX']:matrices['first_logical_rowX'] + Lx.shape[0]]),
         'first_logical_rowZ': matrices['first_logical_rowZ'], 'first_logical_rowX': matrices['first_logical_rowX'],
-        'alpha': 0 if use_dynamic_alpha else 1.0, 'maxIter': maxIter, 'osd_order': osd_order,
+        'alpha_mode': alpha_mode, 'alpha_z': alpha_z, 'alpha_x': alpha_x,
+        'maxIter': maxIter, 'osd_order': osd_order,
         'base_seed': base_seed, 'use_sparse': use_sparse,
         'HdecZ_csr': csr_matrix(matrices['HdecZ']) if use_sparse else None,
         'HdecX_csr': csr_matrix(matrices['HdecX']) if use_sparse else None,

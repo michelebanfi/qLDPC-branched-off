@@ -2,11 +2,30 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from .kernels import bp_core, minsum_core
 
-def performMinSum_Symmetric(H, syndrome, initialBelief, maxIter=50, alpha=1.0, damping=1.0, clip_llr=20.0, alpha_estimation=False):
+def performMinSum_Symmetric(
+    H,
+    syndrome,
+    initialBelief,
+    maxIter=50,
+    alpha=1.0,
+    alpha_mode="dynamical",
+    damping=1.0,
+    clip_llr=20.0,
+    alpha_estimation=False,
+):
     """
     Normalized Min-Sum Algorithm (Numba-accelerated).
     """
-    use_dynamic_alpha = (alpha == 0)
+    if alpha_mode is None:
+        use_dynamic_alpha = (alpha == 0)
+    elif alpha_mode == "dynamical":
+        use_dynamic_alpha = True
+    elif alpha_mode == "alvarado":
+        if alpha <= 0:
+            raise ValueError("alpha must be > 0 when alpha_mode='alvarado'")
+        use_dynamic_alpha = False
+    else:
+        raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
     H = np.asarray(H, dtype=np.float64)
     syndrome = np.asarray(syndrome, dtype=np.int8)
     initialBelief = np.asarray(initialBelief, dtype=np.float64)
@@ -24,8 +43,9 @@ def performMinSum_Symmetric(H, syndrome, initialBelief, maxIter=50, alpha=1.0, d
         current_alpha = (1.0 - 2.0 ** (-(currentIter + 1))) if use_dynamic_alpha else alpha
         R = minsum_core(H, Q, syndrome_sign, mask, current_alpha)
 
-        if alpha_estimation and currentIter == 10:
-            return np.zeros(n, dtype=np.int8), False, R, 0
+        if alpha_estimation and currentIter == 0:
+            scale = current_alpha if current_alpha != 0 else 1.0
+            return np.zeros(n, dtype=np.int8), False, R / scale, 0
 
         R_sum = np.sum(R, axis=0)
         values = R_sum + initialBelief

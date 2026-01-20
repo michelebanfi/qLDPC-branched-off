@@ -36,7 +36,7 @@ def main():
         
         results[code_name] = {}
         
-        # At this point since it's re-calculated later, we can simply move this function in the if statement
+        # TODO: At this point since it's re-calculated later, we can simply move this function in the if statement
         # below
         cb = BBCodeCircuit(Hx, Hz, num_cycles=exp["distance"], **bb_params)
         
@@ -50,7 +50,7 @@ def main():
             
             res = run_simulation(
                 Hx, Hz, Lx, Lz, p, num_cycles=exp["distance"],
-                maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices,
+                maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices, alpha_mode="alvarado"
                 num_workers=num_workers, target_logical_errors=target_logical_errors,
                 max_trials=max_trials, **bb_params
             )

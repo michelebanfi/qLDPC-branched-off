@@ -7,14 +7,24 @@ def performMinSum_Symmetric_Sparse(
     syndrome, 
     initialBelief, 
     maxIter=100, 
-    alpha=1.0, 
+    alpha=1.0,
+    alpha_mode="dynamical",
     damping=1.0, 
     clip_llr=20.0
 ):
     """
     Highly optimized Sparse Min-Sum Algorithm using fully JIT-compiled decoder.
     """
-    use_dynamic_alpha = (alpha == 0)
+    if alpha_mode is None:
+        use_dynamic_alpha = (alpha == 0)
+    elif alpha_mode == "dynamical":
+        use_dynamic_alpha = True
+    elif alpha_mode == "alvarado":
+        if alpha <= 0:
+            raise ValueError("alpha must be > 0 when alpha_mode='alvarado'")
+        use_dynamic_alpha = False
+    else:
+        raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
     syndrome = np.asarray(syndrome, dtype=np.int8)
     initialBelief = np.asarray(initialBelief, dtype=np.float64)
     
@@ -37,14 +47,24 @@ def performMinSum_Symmetric_Sparse_Legacy(
     syndrome, 
     initialBelief, 
     maxIter=100, 
-    alpha=1.0, 
+    alpha=1.0,
+    alpha_mode="dynamical",
     damping=1.0, 
     clip_llr=20.0
 ):
     """
     Legacy implementation with Python loop (kept for reference/debugging).
     """
-    use_dynamic_alpha = (alpha == 0)
+    if alpha_mode is None:
+        use_dynamic_alpha = (alpha == 0)
+    elif alpha_mode == "dynamical":
+        use_dynamic_alpha = True
+    elif alpha_mode == "alvarado":
+        if alpha <= 0:
+            raise ValueError("alpha must be > 0 when alpha_mode='alvarado'")
+        use_dynamic_alpha = False
+    else:
+        raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
     syndrome = np.asarray(syndrome, dtype=np.int8)
     initialBelief = np.asarray(initialBelief, dtype=np.float64)
     
