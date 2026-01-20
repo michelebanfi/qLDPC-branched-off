@@ -1,7 +1,8 @@
+import numba
 import numpy as np
 from numba import njit
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True)
 def gf2_elimination(A, b):
     """JIT-compiled GF2 Gaussian elimination."""
     m, n = A.shape
@@ -32,7 +33,79 @@ def gf2_elimination(A, b):
         row += 1
     return A, b, pivot_rows[:num_pivots], pivot_cols[:num_pivots]
 
-@njit(cache=True, nogil=True)
+def _pack_rows_uint64(A):
+    """Pack rows of a binary matrix into uint64 words using NumPy packbits."""
+    m, n = A.shape
+    A_uint8 = np.ascontiguousarray(A, dtype=np.uint8)
+    packed_bytes = np.packbits(A_uint8, axis=1, bitorder="little")
+    nbytes = packed_bytes.shape[1]
+    pad = (-nbytes) % 8
+    if pad:
+        packed_bytes = np.pad(packed_bytes, ((0, 0), (0, pad)), mode="constant")
+    A_packed = packed_bytes.view(np.uint64)
+    return A_packed, n
+
+@njit(cache=True, nogil=True, fastmath=True)
+def gf2_elimination_packed_core(A_packed, b, n):
+    """
+    GF(2) Gaussian elimination on a bit-packed matrix.
+
+    Expects A packed into uint64 words (one bit per column) and performs
+    word-wise XOR row operations. Returns packed matrix, updated b, and pivots.
+    """
+    m = A_packed.shape[0]
+    nwords = A_packed.shape[1]
+
+    pivot_rows = np.empty(min(m, n), dtype=np.int64)
+    pivot_cols = np.empty(min(m, n), dtype=np.int64)
+    num_pivots = 0
+    row = 0
+
+    for col in range(n):
+        if row >= m:
+            break
+
+        word_idx = col >> 6
+        bit_mask = np.uint64(1) << np.uint64(col & 63)
+
+        pivot_row = -1
+        for r in range(row, m):
+            if (A_packed[r, word_idx] & bit_mask) != 0:
+                pivot_row = r
+                break
+        if pivot_row == -1:
+            continue
+
+        if pivot_row != row:
+            for k in range(nwords):
+                A_packed[row, k], A_packed[pivot_row, k] = A_packed[pivot_row, k], A_packed[row, k]
+            b[row], b[pivot_row] = b[pivot_row], b[row]
+
+        pivot_rows[num_pivots] = row
+        pivot_cols[num_pivots] = col
+        num_pivots += 1
+
+        for r in range(m):
+            if r != row and (A_packed[r, word_idx] & bit_mask) != 0:
+                for k in range(nwords):
+                    A_packed[r, k] ^= A_packed[row, k]
+                b[r] ^= b[row]
+
+        row += 1
+
+    return A_packed, b, pivot_rows[:num_pivots], pivot_cols[:num_pivots]
+
+def gf2_elimination_packed(A, b):
+    """
+    GF(2) Gaussian elimination using NumPy packbits + packed core.
+
+    Packs rows into uint64 with NumPy for faster packing, then runs the
+    compiled packed elimination core. Returns packed matrix, updated b, and pivots.
+    """
+    A_packed, n = _pack_rows_uint64(A)
+    return gf2_elimination_packed_core(A_packed, b, n)
+
+@njit(cache=True, nogil=True, fastmath=True)
 def minsum_core(H, Q, syndrome_sign, mask, alpha):
     """Core Min-Sum message computation."""
     m, n = H.shape
@@ -62,7 +135,7 @@ def minsum_core(H, Q, syndrome_sign, mask, alpha):
                 R[i, j] = alpha * row_sign_excl_j * mag
     return R
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True)
 def minsum_core_sparse(H_data, H_indices, H_indptr, Q_flat, syndrome_sign, alpha, m, n):
     """Sparse-aware Min-Sum message computation."""
     nnz = len(H_data)
@@ -95,7 +168,7 @@ def minsum_core_sparse(H_data, H_indices, H_indptr, Q_flat, syndrome_sign, alpha
             R_sum[H_indices[pos]] += msg
     return R_flat, R_sum
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True)
 def bp_core(H, Q, syndrome_sign, mask, clip_val):
     """Core BP tanh-based message computation."""
     m, n = H.shape
@@ -119,7 +192,7 @@ def bp_core(H, Q, syndrome_sign, mask, clip_val):
                 R[i, j] = 2.0 * np.arctanh(prod_clipped)
     return R
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True)
 def compute_metric(solution, llr_abs, syndrome_weight):
     """JIT-compiled metric computation for OSD."""
     if syndrome_weight > 0:
@@ -130,7 +203,7 @@ def compute_metric(solution, llr_abs, syndrome_weight):
         metric += solution[i] * llr_abs[i]
     return metric
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True)
 def recompute_solution(H_permuted, s_reduced, e_permuted, pivot_rows, pivot_cols):
     """JIT-compiled solution recomputation for OSD."""
     m, n = H_permuted.shape
@@ -146,7 +219,7 @@ def recompute_solution(H_permuted, s_reduced, e_permuted, pivot_rows, pivot_cols
         e_full[c] = s_reduced[r] ^ row_contribution
     return e_full
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True)
 def syndrome_check(H_data, H_indices, H_indptr, candidate, m):
     """JIT-compiled sparse syndrome computation."""
     syndrome = np.zeros(m, dtype=np.int8)
@@ -158,7 +231,7 @@ def syndrome_check(H_data, H_indices, H_indptr, candidate, m):
     return syndrome
 
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, fastmath=True, parallel=True)
 def minsum_decoder_full(
     H_indices, H_indptr, 
     syndrome, initialBelief,
@@ -175,7 +248,7 @@ def minsum_decoder_full(
     nnz = len(H_indices)
     
     syndrome_sign = np.empty(m, dtype=np.float64)
-    for i in range(m):
+    for i in numba.prange(m):
         syndrome_sign[i] = 1.0 - 2.0 * syndrome[i]
     
     # Pre-allocate all buffers
@@ -202,7 +275,7 @@ def minsum_decoder_full(
             current_alpha = alpha_val
         
         # Reset R_sum
-        for j in range(n):
+        for j in numba.prange(n):
             R_sum[j] = 0.0
         
         # Min-Sum core: compute R messages
@@ -242,8 +315,8 @@ def minsum_decoder_full(
                 R_flat[pos] = msg
                 R_sum[H_indices[pos]] += msg
         
-        # Update values and Q messages
-        for j in range(n):
+        # Update values
+        for j in numba.prange(n):
             values[j] = R_sum[j] + initialBelief[j]
         
         # Update Q messages with damping and clipping
@@ -272,7 +345,7 @@ def minsum_decoder_full(
             Q_flat_old[idx] = q_damped
         
         # Compute candidate error and check syndrome
-        for j in range(n):
+        for j in numba.prange(n):
             candidateError[j] = 1 if values[j] < 0 else 0
         
         # Check syndrome

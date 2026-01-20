@@ -1,6 +1,6 @@
 from itertools import combinations
 import numpy as np
-from .kernels import gf2_elimination, compute_metric, recompute_solution
+from .kernels import gf2_elimination_packed, compute_metric, recompute_solution
 
 def performOSD_enhanced(H, syndrome, llr, hard, order=0, max_combinations=None):
     """OSD decoder with Numba-accelerated internals."""
@@ -14,7 +14,7 @@ def performOSD_enhanced(H, syndrome, llr, hard, order=0, max_combinations=None):
     
     H_work = H_permuted.copy()
     s_work = residual_syndrome.copy().astype(np.int64)
-    _, s_reduced, pivot_rows, pivot_cols = gf2_elimination(H_work, s_work)
+    _, s_reduced, pivot_rows, pivot_cols = gf2_elimination_packed(H_work, s_work)
     
     e_permuted = np.zeros(n, dtype=np.int64)
     for r, c in zip(pivot_rows, pivot_cols):

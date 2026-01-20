@@ -18,7 +18,7 @@ experiments = [
 
 def main():
     num_trials = 1000
-    maxIter = 50
+    maxIter = 100
     osd_order = 7
     num_workers = 8
     cache_dir = "matrix_cache"
