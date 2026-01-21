@@ -69,7 +69,7 @@ def main():
     # Create timestamped output directory
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = f"/output/run_{timestamp}"
+    output_dir = os.path.join("output", f"run_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
     
     # Plotting
