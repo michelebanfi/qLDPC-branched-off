@@ -1,5 +1,6 @@
+import os
 import numpy as np
-import matplotlib.pyplot as plt
+from datetime import datetime
 from rich.console import Console
 
 from src.codes.bb_code import BBCodeCircuit
@@ -7,6 +8,7 @@ from src.simulation.engine import run_simulation
 from src.noise.builder import build_decoding_matrices
 from src.utils.plotting import plot_simulation_results
 from src.utils.caching import compute_cache_key, load_matrices, save_matrices
+
 
 console = Console()
 
@@ -22,8 +24,8 @@ experiments = [
 def main():
     target_logical_errors = 30
     max_trials = 100000
-    maxIter = 200
-    osd_order = 7
+    maxIter = 50
+    osd_order = 0
     num_workers = 8
     cache_dir = "matrix_cache"
     
@@ -64,8 +66,21 @@ def main():
                 f"(trials={res['num_trials']}, logical_errors={res['logical_errors']})"
             )
 
+    # Create timestamped output directory
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = f"/output/run_{timestamp}"
+    os.makedirs(output_dir, exist_ok=True)
+    
     # Plotting
-    plot_simulation_results(results, "simulation_results.png")
+    plot_path = f"{output_dir}/simulation_results.png"
+    plot_simulation_results(results, plot_path)
+    
+    # Save results as npz
+    results_path = f"{output_dir}/results.npz"
+    np.savez(results_path, **results)
+    
+    console.print(f"Results saved to {output_dir}")
 
 if __name__ == "__main__":
     main()
