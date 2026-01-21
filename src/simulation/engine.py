@@ -1,4 +1,7 @@
+import logging
 import numpy as np
+from rich.console import Console
+from rich.logging import RichHandler
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TaskProgressColumn
 from multiprocessing import cpu_count, get_context
 from scipy.sparse import csr_matrix
@@ -19,6 +22,16 @@ from ..decoding.alpha import estimate_alpha_alvarado
 from ..decoding.osd import performOSD_enhanced
 
 _shared_data = None
+_console = Console()
+
+_logger = logging.getLogger(__name__)
+if not _logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(console=_console, rich_tracebacks=True, markup=True)],
+    )
 
 def _warmup_jit():
     """Warm up JIT compilation for decoders and circuit simulation."""
@@ -218,7 +231,11 @@ def run_simulation(
             trials_z = alpha_estimation_trials if alpha_estimation_trials != 5000 else dynamic_trials_z
             trials_x = alpha_estimation_trials if alpha_estimation_trials != 5000 else dynamic_trials_x
             
-            print(f"Alpha estimation trials: Z={trials_z}, X={trials_x} (dynamic based on n*p)")
+            _logger.info(
+                "Alpha estimation trials: Z=%d, X=%d (dynamic based on n*p)",
+                trials_z,
+                trials_x,
+            )
             
             alpha_z = estimate_alpha_alvarado(
                 matrices['HdecZ'], error_rate,
@@ -230,22 +247,28 @@ def run_simulation(
                 trials=trials_x,
                 bins=alpha_estimation_bins,
             )
-            print(
-                f"Alvarado alpha (estimated) for p={error_rate}: "
-                f"alpha_z={alpha_z:.6g}, alpha_x={alpha_x:.6g}"
+            _logger.info(
+                "Alvarado alpha (estimated) for p=%.6g: alpha_z=%.6g, alpha_x=%.6g",
+                error_rate,
+                alpha_z,
+                alpha_x,
             )
         elif isinstance(alvarado_alpha, (list, tuple, np.ndarray)) and len(alvarado_alpha) == 2:
             alpha_z, alpha_x = float(alvarado_alpha[0]), float(alvarado_alpha[1])
-            print(
-                f"Alvarado alpha (provided) for p={error_rate}: "
-                f"alpha_z={alpha_z:.6g}, alpha_x={alpha_x:.6g}"
+            _logger.info(
+                "Alvarado alpha (provided) for p=%.6g: alpha_z=%.6g, alpha_x=%.6g",
+                error_rate,
+                alpha_z,
+                alpha_x,
             )
         else:
             alpha_z = float(alvarado_alpha)
             alpha_x = float(alvarado_alpha)
-            print(
-                f"Alvarado alpha (provided) for p={error_rate}: "
-                f"alpha_z={alpha_z:.6g}, alpha_x={alpha_x:.6g}"
+            _logger.info(
+                "Alvarado alpha (provided) for p=%.6g: alpha_z=%.6g, alpha_x=%.6g",
+                error_rate,
+                alpha_z,
+                alpha_x,
             )
     elif alpha_mode == "dynamical":
         alpha_z = 1.0

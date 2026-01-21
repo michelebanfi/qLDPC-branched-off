@@ -1,11 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from rich.console import Console
 
 from src.codes.bb_code import BBCodeCircuit
 from src.simulation.engine import run_simulation
 from src.noise.builder import build_decoding_matrices
 from src.utils.plotting import plot_simulation_results
 from src.utils.caching import compute_cache_key, load_matrices, save_matrices
+
+console = Console()
 
 # Experiment configuration
 experiments = [
@@ -28,7 +31,7 @@ def main():
     
     for exp in experiments:
         code_name = exp["name"]
-        print(f"\n{'='*60}\nRunning simulation for code {exp['code']}\n{'='*60}")
+        console.rule(f"Running simulation for code {exp['code']}")
         
         data = np.load(f"codes/{exp['code']}.npz")
         Hx, Hz, Lx, Lz = data["Hx"], data["Hz"], data["Lx"], data["Lz"]
@@ -44,7 +47,7 @@ def main():
             key = compute_cache_key(Hx, Hz, Lx, Lz, exp["distance"], p)
             matrices = load_matrices(cache_dir, key)
             if matrices is None:
-                print(f"Building decoding matrices for p={p}...")
+                console.print(f"Building decoding matrices for p={p}...")
                 matrices = build_decoding_matrices(cb, Lx, Lz, p, num_workers=num_workers)
                 save_matrices(cache_dir, key, matrices)
             
@@ -56,7 +59,10 @@ def main():
             )
             
             results[code_name][p] = res
-            print(f"  LER: {res['logical_error_rate']:.4e} (trials={res['num_trials']}, logical_errors={res['logical_errors']})")
+            console.print(
+                f"  LER: {res['logical_error_rate']:.4e} "
+                f"(trials={res['num_trials']}, logical_errors={res['logical_errors']})"
+            )
 
     # Plotting
     plot_simulation_results(results, "simulation_results.png")
