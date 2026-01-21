@@ -202,14 +202,32 @@ def run_simulation(
 
     if alpha_mode == "alvarado":
         if alvarado_alpha is None:
+            # Dynamically compute trials to ensure enough true_1 samples
+            # We want at least ~1000 error bits sampled for reliable histogram
+            # Expected errors per trial ≈ n * error_rate
+            # So trials needed ≈ min_samples / (n * error_rate)
+            min_true1_samples = 1000
+            n_z = matrices['HdecZ'].shape[1]
+            n_x = matrices['HdecX'].shape[1]
+            
+            # Compute dynamic trials with a reasonable floor and ceiling
+            dynamic_trials_z = max(500, min(50000, int(min_true1_samples / (n_z * error_rate))))
+            dynamic_trials_x = max(500, min(50000, int(min_true1_samples / (n_x * error_rate))))
+            
+            # Use user-provided value if explicitly set, otherwise use dynamic
+            trials_z = alpha_estimation_trials if alpha_estimation_trials != 5000 else dynamic_trials_z
+            trials_x = alpha_estimation_trials if alpha_estimation_trials != 5000 else dynamic_trials_x
+            
+            print(f"Alpha estimation trials: Z={trials_z}, X={trials_x} (dynamic based on n*p)")
+            
             alpha_z = estimate_alpha_alvarado(
                 matrices['HdecZ'], error_rate,
-                trials=alpha_estimation_trials,
+                trials=trials_z,
                 bins=alpha_estimation_bins,
             )
             alpha_x = estimate_alpha_alvarado(
                 matrices['HdecX'], error_rate,
-                trials=alpha_estimation_trials,
+                trials=trials_x,
                 bins=alpha_estimation_bins,
             )
             print(
