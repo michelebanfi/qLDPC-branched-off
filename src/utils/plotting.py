@@ -12,16 +12,18 @@ def plot_simulation_results(results, filename="simulation_results.png"):
 
         log_ps = np.log10(np.array(ps, dtype=float))
         log_lers = np.log10(np.array(lers, dtype=float))
-        interp_log_ps = np.linspace(log_ps.min(), log_ps.max(), 200)
-        interp_log_lers = np.interp(interp_log_ps, log_ps, log_lers)
-        plt.loglog(10 ** interp_log_ps, 10 ** interp_log_lers, '-', color=color)
+        slope, intercept = np.polyfit(log_ps, log_lers, 1)
+        fit_xmin, fit_xmax = min(ps), max(ps)
+        fit_log_ps = np.linspace(np.log10(fit_xmin), np.log10(fit_xmax), 200)
+        fit_log_lers = slope * fit_log_ps + intercept
+        plt.loglog(10 ** fit_log_ps, 10 ** fit_log_lers, '-', color=color)
     
     plt.xlabel("Physical Error Rate p")
     plt.ylabel("Logical Error Rate LER")
     plt.xlim(1e-4, 1e-2)
-    plt.ylim(1e-13, 1e-1)
+    plt.ylim(1e-7, 0)
     plt.grid(True, which="both", ls="-", alpha=0.5)
     plt.legend()
     plt.title("Spatio-Temporal Decoding Performance")
-    plt.savefig(filename)
+    plt.savefig(filename, dpi=300)
     print(f"\nResults saved to {filename}")

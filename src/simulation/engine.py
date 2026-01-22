@@ -216,10 +216,10 @@ def run_simulation(
     if alpha_mode == "alvarado":
         if alvarado_alpha is None:
             # Dynamically compute trials to ensure enough true_1 samples
-            # We want at least ~1000 error bits sampled for reliable histogram
+            # We want at least ~2000 error bits sampled for reliable histogram
             # Expected errors per trial ≈ n * error_rate
             # So trials needed ≈ min_samples / (n * error_rate)
-            min_true1_samples = 1000
+            min_true1_samples = 2000
             n_z = matrices['HdecZ'].shape[1]
             n_x = matrices['HdecX'].shape[1]
             
