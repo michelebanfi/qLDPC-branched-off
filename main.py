@@ -23,11 +23,12 @@ experiments = [
 
 def main():
     target_logical_errors = 30
-    max_trials = 10000000
+    max_trials = 1000000
     maxIter = 50
     osd_order = 0
     num_workers = 8
     alpha_mode = "alvarado"
+    scopt = False
     cache_dir = "matrix_cache"
     
     results = {}
@@ -58,7 +59,7 @@ def main():
                 Hx, Hz, Lx, Lz, p, num_cycles=exp["distance"],
                 maxIter=maxIter, osd_order=osd_order, precomputed_matrices=matrices, alpha_mode=alpha_mode,
                 num_workers=num_workers, target_logical_errors=target_logical_errors,
-                max_trials=max_trials, **bb_params
+                max_trials=max_trials, scopt=scopt, **bb_params
             )
             
             results[code_name][p] = res

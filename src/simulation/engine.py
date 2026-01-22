@@ -19,6 +19,7 @@ from ..noise.builder import build_decoding_matrices
 from ..decoding.dense import performMinSum_Symmetric
 from ..decoding.sparse import performMinSum_Symmetric_Sparse
 from ..decoding.alpha import estimate_alpha_alvarado
+from ..decoding.scopt import estimate_scopt_beta
 from ..decoding.osd import performOSD_enhanced
 
 _shared_data = None
@@ -195,7 +196,7 @@ def run_simulation(
     alpha_estimation_trials=5000, alpha_estimation_bins=50,
     precomputed_matrices=None, num_workers=None, base_seed=None,
     use_jit=True,  # New parameter to enable/disable JIT
-    target_logical_errors=None, max_trials=None,
+    target_logical_errors=None, max_trials=None, scopt=False,
     **bb_params
 ):
     if num_workers is None: num_workers = min(8, cpu_count())
@@ -275,6 +276,41 @@ def run_simulation(
         alpha_x = 1.0
     else:
         raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
+    
+    if scopt:
+                
+        min_true1_samples = 2000
+        n_z = matrices['HdecZ'].shape[1]
+        n_x = matrices['HdecX'].shape[1]
+        
+        dynamic_trials_z = max(500, min(50000, int(min_true1_samples / (n_z * error_rate))))
+        dynamic_trials_x = max(500, min(50000, int(min_true1_samples / (n_x * error_rate))))
+        
+        _logger.info(
+                "Beta estimation trials: Z=%d, X=%d (dynamic based on n*p)",
+                dynamic_trials_z,
+                dynamic_trials_x,
+            )
+        beta_z = estimate_scopt_beta(
+            matrices['HdecZ'], error_rate,
+            trials=dynamic_trials_z,
+            bins=alpha_estimation_bins,
+            alpha=alpha_z,
+        )
+        beta_x = estimate_scopt_beta(
+            matrices['HdecX'], error_rate,
+            trials=dynamic_trials_x,
+            bins=alpha_estimation_bins,
+            alpha=alpha_x,
+        )
+        _logger.info(
+            "SCOPT beta (estimated) for p=%.6g: beta_z=%.6g, beta_x=%.6g",
+            error_rate,
+            beta_z,
+            beta_x,
+        )
+        
+        # TODO: implement the Beta usage in the decoder!
     
     # Build compiled circuit for JIT path
     compiled_circuit = None
