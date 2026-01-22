@@ -31,3 +31,8 @@ def plot_simulation_results(results, filename="simulation_results.png"):
     plt.title("Spatio-Temporal Decoding Performance")
     plt.savefig(filename, dpi=300)
     print(f"\nResults saved to {filename}")
+
+
+npz = np.load("results.npz", allow_pickle=True)
+results = {k: npz[k].item() for k in npz.files}
+plot_simulation_results(results, filename="simulation_results.png")
