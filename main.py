@@ -21,13 +21,21 @@ experiments = [
     {"code": "[[288, 12, 18]]", "name": "288", "physicalErrorRates": [0.006, 0.005, 0.004, 0.0035], "distance": 18},
 ]
 
+experiments = [
+    {"code": "[[72, 12, 6]]", "name": "72", "physicalErrorRates": [0.006, 0.005, 0.004], "distance": 6},
+    {"code": "[[90, 8, 10]]", "name": "90", "physicalErrorRates": [0.006, 0.005, 0.004,], "distance": 10},
+    {"code": "[[108, 8, 10]]", "name": "108", "physicalErrorRates": [0.006, 0.005, 0.004], "distance": 10},
+    {"code": "[[144, 12, 12]]", "name": "144", "physicalErrorRates": [0.006, 0.005, 0.004], "distance": 12},
+    {"code": "[[288, 12, 18]]", "name": "288", "physicalErrorRates": [0.006, 0.005], "distance": 18},
+]
+
 def main():
     target_logical_errors = 30
     max_trials = 1000000
-    maxIter = 50
-    osd_order = 0
+    maxIter = 200
+    osd_order = 7
     num_workers = 8
-    alpha_mode = "alvarado"
+    alpha_mode = "dynamical"
     scopt = False
     cache_dir = "matrix_cache"
     
