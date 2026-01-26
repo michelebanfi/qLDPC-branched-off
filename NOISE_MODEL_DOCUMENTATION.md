@@ -558,6 +558,7 @@ If you have $m$ checks and $T$ syndrome extraction cycles, your syndrome has $M 
 This is the most confusing part. The columns are **NOT** physical qubits.
 
 **A fault** is a specific error at a specific location in the circuit:
+
 - "Z error after CNOT #47 in cycle 3"
 - "X error before MeasZ #12 in cycle 5"
 - "Y error during IDLE on qubit D₃ in cycle 2"
@@ -604,6 +605,7 @@ This is the most confusing part. The columns are **NOT** physical qubits.
 If Fault 1 (Z on D₀) and Fault 2 (Z on D₁) produce the **exact same syndrome AND logical effect**, we cannot distinguish them. From the decoder's perspective, they are the same.
 
 **Merging** means:
+
 1. They share one column in Hdec
 2. Their probabilities are **summed**: $p_{\text{class}} = p_{\text{fault1}} + p_{\text{fault2}}$
 
@@ -662,10 +664,12 @@ Value:      0    0    0    0    1    0    0    1    0    0    0    0
 ```
 
 **Interpreting this syndrome:**
+
 - C₁ "flipped" at cycle 2 (something happened between cycle 1 and 2)
 - C₁ "flipped" again at cycle 3 (the effect ended)
 
 This could be:
+
 1. **A measurement error** at cycle 2 (purely temporal — no actual data error)
 2. **A data error** that occurred in cycle 2 and was corrected by cycle 3
 3. **Two separate errors** that both affected C₁
@@ -704,16 +708,16 @@ Syndrome (C₀,t=2)│   │  1   0   0   0  ...     1      │
 
 ### 8.0.7 Summary: Code-Capacity vs Circuit-Level
 
-| Aspect | Code-Capacity | Circuit-Level |
-|--------|---------------|---------------|
-| **Syndrome size** | $m$ bits | $m \times T$ bits |
-| **Matrix** | $H_x$ from code definition | $H_{\text{dec}}$ from simulation |
-| **Columns represent** | Physical qubits | Fault equivalence classes |
-| **Rows represent** | Checks | (Check, Time) pairs |
-| **Matrix size** | $m \times n$ (small) | $(m \cdot T) \times F$ (large) |
-| **Decoding finds** | Which qubits have errors | Which fault classes occurred |
-| **Final output** | Correction on qubits | Logical correction only |
-| **Construction** | Direct from code | Enumerate & simulate all faults |
+| Aspect                | Code-Capacity              | Circuit-Level                    |
+| --------------------- | -------------------------- | -------------------------------- |
+| **Syndrome size**     | $m$ bits                   | $m \times T$ bits                |
+| **Matrix**            | $H_x$ from code definition | $H_{\text{dec}}$ from simulation |
+| **Columns represent** | Physical qubits            | Fault equivalence classes        |
+| **Rows represent**    | Checks                     | (Check, Time) pairs              |
+| **Matrix size**       | $m \times n$ (small)       | $(m \cdot T) \times F$ (large)   |
+| **Decoding finds**    | Which qubits have errors   | Which fault classes occurred     |
+| **Final output**      | Correction on qubits       | Logical correction only          |
+| **Construction**      | Direct from code           | Enumerate & simulate all faults  |
 
 ---
 
@@ -808,18 +812,19 @@ return {
 
 #### Understanding Each Output
 
-| Key | Shape | Purpose |
-|-----|-------|---------|
-| `HdecZ` | $(M, F_Z)$ | Z-error decoding matrix. Used by Min-Sum decoder to solve $H_{\text{dec}} \cdot f = s$ |
-| `HdecX` | $(M, F_X)$ | X-error decoding matrix |
-| `channel_probsZ` | $(F_Z,)$ | Probability of each fault class. Used to initialize LLRs: $\lambda_i = \log\frac{1-p_i}{p_i}$ |
-| `channel_probsX` | $(F_X,)$ | Same for X-errors |
-| `HZ_full` | $(M+k, F_Z)$ | Hdec with logical rows appended. Row $M+i$ tells you if fault class affects logical qubit $i$ |
-| `HX_full` | $(M+k, F_X)$ | Same for X-errors |
-| `first_logical_rowZ` | int | $= M$. The index where logical rows start in `HZ_full` |
-| `k` | int | Number of logical qubits (for checking logical errors) |
+| Key                  | Shape        | Purpose                                                                                       |
+| -------------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| `HdecZ`              | $(M, F_Z)$   | Z-error decoding matrix. Used by Min-Sum decoder to solve $H_{\text{dec}} \cdot f = s$        |
+| `HdecX`              | $(M, F_X)$   | X-error decoding matrix                                                                       |
+| `channel_probsZ`     | $(F_Z,)$     | Probability of each fault class. Used to initialize LLRs: $\lambda_i = \log\frac{1-p_i}{p_i}$ |
+| `channel_probsX`     | $(F_X,)$     | Same for X-errors                                                                             |
+| `HZ_full`            | $(M+k, F_Z)$ | Hdec with logical rows appended. Row $M+i$ tells you if fault class affects logical qubit $i$ |
+| `HX_full`            | $(M+k, F_X)$ | Same for X-errors                                                                             |
+| `first_logical_rowZ` | int          | $= M$. The index where logical rows start in `HZ_full`                                        |
+| `k`                  | int          | Number of logical qubits (for checking logical errors)                                        |
 
 Where:
+
 - $M$ = `num_syndrome_bits` = (number of checks) × (number of cycles)
 - $F_Z, F_X$ = number of fault equivalence classes for Z and X errors
 - $k$ = number of logical qubits
@@ -1145,24 +1150,24 @@ The decoder then finds the most likely error configuration matching the syndrome
 
 ## 11. Glossary
 
-| Term                           | Definition                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| **Syndrome**                   | The measurement outcomes from parity checks; reveals error locations        |
-| **Sparsification**             | Converting raw syndromes to differential form via XOR of consecutive measurements |
-| **Spatio-temporal syndrome**   | Syndrome that includes both spatial (which check) and temporal (which cycle) information |
-| **Depolarizing noise**         | Noise model with equal probability of X, Y, Z errors ($p/3$ each)           |
-| **Channel probability**        | Probability that a specific fault equivalence class occurs                  |
-| **LLR (Log-Likelihood Ratio)** | $\log\frac{1-p}{p}$, used to initialize belief propagation decoder          |
-| **Fault**                      | A specific error at a specific location in the circuit (e.g., "Z after CNOT #5") |
-| **Fault equivalence class**    | Group of faults that produce identical syndrome AND logical effect          |
-| **Propagation**                | How errors spread through quantum gates (X: ctrl→tgt, Z: tgt→ctrl for CNOT) |
-| **Op code**                    | Integer representation of gate types for efficient computation              |
-| **X-check / Z-check**          | Ancilla qubits measuring X-type / Z-type stabilizers                        |
-| **Decoding matrix ($H_{\text{dec}}$)** | Matrix mapping fault classes to syndrome bits; rows=(check,time), cols=fault classes |
-| **Code-capacity**              | Simplified noise model: errors only on data qubits, perfect syndrome extraction |
-| **Circuit-level**              | Realistic noise model: errors on all operations including measurements       |
-| **Logical rows**               | Extra rows in $H_{\text{full}}$ indicating logical effect of each fault class |
-| **Logical correction**         | The correction to apply to logical qubits, derived from decoded fault vector |
+| Term                                   | Definition                                                                               |
+| -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **Syndrome**                           | The measurement outcomes from parity checks; reveals error locations                     |
+| **Sparsification**                     | Converting raw syndromes to differential form via XOR of consecutive measurements        |
+| **Spatio-temporal syndrome**           | Syndrome that includes both spatial (which check) and temporal (which cycle) information |
+| **Depolarizing noise**                 | Noise model with equal probability of X, Y, Z errors ($p/3$ each)                        |
+| **Channel probability**                | Probability that a specific fault equivalence class occurs                               |
+| **LLR (Log-Likelihood Ratio)**         | $\log\frac{1-p}{p}$, used to initialize belief propagation decoder                       |
+| **Fault**                              | A specific error at a specific location in the circuit (e.g., "Z after CNOT #5")         |
+| **Fault equivalence class**            | Group of faults that produce identical syndrome AND logical effect                       |
+| **Propagation**                        | How errors spread through quantum gates (X: ctrl→tgt, Z: tgt→ctrl for CNOT)              |
+| **Op code**                            | Integer representation of gate types for efficient computation                           |
+| **X-check / Z-check**                  | Ancilla qubits measuring X-type / Z-type stabilizers                                     |
+| **Decoding matrix ($H_{\text{dec}}$)** | Matrix mapping fault classes to syndrome bits; rows=(check,time), cols=fault classes     |
+| **Code-capacity**                      | Simplified noise model: errors only on data qubits, perfect syndrome extraction          |
+| **Circuit-level**                      | Realistic noise model: errors on all operations including measurements                   |
+| **Logical rows**                       | Extra rows in $H_{\text{full}}$ indicating logical effect of each fault class            |
+| **Logical correction**                 | The correction to apply to logical qubits, derived from decoded fault vector             |
 
 ---
 
