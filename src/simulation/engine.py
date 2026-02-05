@@ -18,7 +18,7 @@ from ..noise.compiled import CompiledCircuit
 from ..noise.builder import build_decoding_matrices
 from ..decoding.dense import performMinSum_Symmetric
 from ..decoding.sparse import performMinSum_Symmetric_Sparse
-from ..decoding.alpha import estimate_alpha_alvarado
+from ..decoding.alpha import estimate_alpha_alvarado, estimate_alpha_alvarado_autoregressive
 from ..decoding.scopt import estimate_scopt_beta
 from ..decoding.osd import performOSD_enhanced
 
@@ -214,6 +214,9 @@ def run_simulation(
     if alpha_mode is None:
         alpha_mode = "dynamical" if use_dynamic_alpha else "alvarado"
 
+    alpha_values_z = None
+    alpha_values_x = None
+
     if alpha_mode == "alvarado":
         if alvarado_alpha is None:
             # Dynamically compute trials to ensure enough true_1 samples
@@ -271,6 +274,47 @@ def run_simulation(
                 alpha_z,
                 alpha_x,
             )
+    elif alpha_mode == "alvarado-autoregressive":
+        if alvarado_alpha is not None:
+            raise ValueError("alvarado_alpha must be None for alvarado-autoregressive")
+
+        min_true1_samples = 2000
+        n_z = matrices['HdecZ'].shape[1]
+        n_x = matrices['HdecX'].shape[1]
+
+        dynamic_trials_z = max(500, min(50000, int(min_true1_samples / (n_z * error_rate))))
+        dynamic_trials_x = max(500, min(50000, int(min_true1_samples / (n_x * error_rate))))
+
+        trials_z = alpha_estimation_trials if alpha_estimation_trials != 5000 else dynamic_trials_z
+        trials_x = alpha_estimation_trials if alpha_estimation_trials != 5000 else dynamic_trials_x
+
+        _logger.info(
+            "Autoregressive alpha estimation trials: Z=%d, X=%d (dynamic based on n*p)",
+            trials_z,
+            trials_x,
+        )
+
+        alpha_values_z = estimate_alpha_alvarado_autoregressive(
+            matrices['HdecZ'], error_rate,
+            maxIter=maxIter,
+            trials=trials_z,
+            bins=alpha_estimation_bins,
+        )
+        alpha_values_x = estimate_alpha_alvarado_autoregressive(
+            matrices['HdecX'], error_rate,
+            maxIter=maxIter,
+            trials=trials_x,
+            bins=alpha_estimation_bins,
+        )
+
+        alpha_z = alpha_values_z
+        alpha_x = alpha_values_x
+
+        _logger.info(
+            "Alvarado autoregressive alpha estimated for p=%.6g (len=%d)",
+            error_rate,
+            len(alpha_values_z),
+        )
     elif alpha_mode == "dynamical":
         alpha_z = 1.0
         alpha_x = 1.0
@@ -296,12 +340,16 @@ def run_simulation(
             trials=dynamic_trials_z,
             bins=alpha_estimation_bins,
             alpha=alpha_z,
+            alpha_mode=alpha_mode,
+            maxIter=maxIter,
         )
         beta_x = estimate_scopt_beta(
             matrices['HdecX'], error_rate,
             trials=dynamic_trials_x,
             bins=alpha_estimation_bins,
             alpha=alpha_x,
+            alpha_mode=alpha_mode,
+            maxIter=maxIter,
         )
         _logger.info(
             "SCOPT beta (estimated) for p=%.6g: beta_z=%.6g, beta_x=%.6g",
@@ -387,10 +435,19 @@ def run_simulation(
                     pool.terminate()
                     break
     
-    return {
+    result = {
         'logical_error_rate': total_errs_count / max(1, trials_run),
         'z_logical_error_rate': z_errs_count / max(1, trials_run),
         'x_logical_error_rate': x_errs_count / max(1, trials_run),
         'num_trials': trials_run,
         'logical_errors': total_errs_count,
     }
+
+    if alpha_mode == "alvarado-autoregressive":
+        result['alpha_values_z'] = alpha_values_z
+        result['alpha_values_x'] = alpha_values_x
+    if scopt:
+        result['beta_z'] = beta_z
+        result['beta_x'] = beta_x
+
+    return result

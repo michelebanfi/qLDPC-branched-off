@@ -7,7 +7,16 @@ from .kernels import minsum_core_sparse
 
 
 def estimate_scopt_beta(
-    code, error_rate, trials=10000, bins=50, alpha=1.0, rng=None
+    code,
+    error_rate,
+    trials=10000,
+    bins=50,
+    alpha=1.0,
+    alpha_mode="dynamical",
+    maxIter=50,
+    damping=1.0,
+    clip_llr=20.0,
+    rng=None,
 ):
     """
     This method is really similar to estimate_alpha_alvarado but adapted for SCOPT.
@@ -16,11 +25,16 @@ def estimate_scopt_beta(
     with the LLRs at the end on the algorithm, before passing them to the OSD stage.
 
     Args:
-        code (_type_): _description_
-        error_rate (_type_): _description_
-        trials (int, optional): _description_. Defaults to 10000.
-        bins (int, optional): _description_. Defaults to 50.
-        rng (_type_, optional): _description_. Defaults to None.
+        code: Parity-check matrix or CSR matrix.
+        error_rate: Physical error rate.
+        trials: Monte Carlo trials.
+        bins: Histogram bins.
+        alpha: Alpha value or per-iteration alpha sequence.
+        alpha_mode: "dynamical", "alvarado", or "alvarado-autoregressive".
+        maxIter: Maximum BP/Min-Sum iterations.
+        damping: Damping factor used in message updates.
+        clip_llr: LLR clipping value.
+        rng: Optional RNG.
     """
     
     if error_rate <= 0 or error_rate >= 0.5:
@@ -34,12 +48,24 @@ def estimate_scopt_beta(
     else:
         H_csr = csr_matrix(code)
 
+    if maxIter <= 0:
+        raise ValueError("maxIter must be > 0")
+
+    if alpha_mode not in {"dynamical", "alvarado", "alvarado-autoregressive"}:
+        raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
+
+    if alpha_mode == "alvarado-autoregressive":
+        alpha_seq = np.asarray(alpha, dtype=np.float64)
+        if alpha_seq.ndim != 1 or alpha_seq.size == 0:
+            raise ValueError("alpha must be a non-empty 1D sequence for alvarado-autoregressive")
+    else:
+        alpha_seq = None
+
     m, n = H_csr.shape
     H_data = H_csr.data.astype(np.int8, copy=False)
     H_indices = H_csr.indices.astype(np.int32, copy=False)
     H_indptr = H_csr.indptr.astype(np.int32, copy=False)
 
-    edge_cols = H_indices
     initial_llr = np.log((1.0 - error_rate) / error_rate)
     initialBeliefs = np.full(n, initial_llr, dtype=np.float64)
 
@@ -52,15 +78,49 @@ def estimate_scopt_beta(
         syndrome_sign = (1.0 - 2.0 * syndrome).astype(np.float64)
 
         Q_flat = initialBeliefs[H_indices].copy()
-        R_flat, _ = minsum_core_sparse(
-            H_data, H_indices, H_indptr, Q_flat, syndrome_sign, alpha, m, n
-        )
+        Q_flat_old = Q_flat.copy()
 
-        # Here we collect the final LLRs after one Min-Sum iteration
-        final_llrs = R_flat + initialBeliefs[edge_cols]
-        bit_values = error[edge_cols]
-        final_0.append(final_llrs[bit_values == 0])
-        final_1.append(final_llrs[bit_values == 1])
+        for currentIter in range(maxIter):
+            if alpha_mode == "dynamical":
+                current_alpha = 1.0 - 2.0 ** (-(currentIter + 1))
+            elif alpha_mode == "alvarado-autoregressive":
+                current_alpha = alpha_seq[currentIter] if currentIter < alpha_seq.size else alpha_seq[-1]
+            else:
+                current_alpha = float(alpha)
+
+            R_flat, R_sum = minsum_core_sparse(
+                H_data, H_indices, H_indptr, Q_flat, syndrome_sign, current_alpha, m, n
+            )
+
+            values = R_sum + initialBeliefs
+
+            for pos in range(len(Q_flat)):
+                col = H_indices[pos]
+                q_new = values[col] - R_flat[pos]
+                if q_new != q_new:
+                    q_new = 0.0
+                elif q_new > clip_llr:
+                    q_new = clip_llr
+                elif q_new < -clip_llr:
+                    q_new = -clip_llr
+
+                q_damped = damping * q_new + (1.0 - damping) * Q_flat_old[pos]
+                if q_damped > clip_llr:
+                    q_damped = clip_llr
+                elif q_damped < -clip_llr:
+                    q_damped = -clip_llr
+
+                Q_flat[pos] = q_damped
+                Q_flat_old[pos] = q_damped
+
+            candidateError = (values < 0).astype(np.int8)
+            calculateSyndrome = H_csr.dot(candidateError) % 2
+            if np.array_equal(calculateSyndrome, syndrome):
+                break
+
+        bit_values = error
+        final_0.append(values[bit_values == 0])
+        final_1.append(values[bit_values == 1])
 
     if not final_0 or not final_1:
         raise ValueError("Insufficient samples for beta estimation")

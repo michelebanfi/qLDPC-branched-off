@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import math
 
 def plot_simulation_results(results, filename="simulation_results.png"):
     colors = ["#2E72AE", "#64B791", "#DBA142", "#000000", "#E17792"]
@@ -31,3 +32,58 @@ def plot_simulation_results(results, filename="simulation_results.png"):
     plt.title("Spatio-Temporal Decoding Performance")
     plt.savefig(filename, dpi=300)
     print(f"\nResults saved to {filename}")
+
+
+def plot_alpha_comparison(results, filename="alpha_comparison.png"):
+    """
+    Plot autoregressive alpha sequences against the dynamical schedule.
+    """
+    codes_with_alpha = []
+    for name, data in results.items():
+        if any('alpha_values_z' in res for res in data.values()):
+            codes_with_alpha.append(name)
+
+    if not codes_with_alpha:
+        print("No autoregressive alpha values found to plot.")
+        return
+
+    n_codes = len(codes_with_alpha)
+    ncols = 2 if n_codes > 1 else 1
+    nrows = math.ceil(n_codes / ncols)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 4 * nrows), squeeze=False)
+
+    for ax, name in zip(axes.flat, codes_with_alpha):
+        data = results[name]
+        ps = sorted(data.keys())
+        dyn_plotted = False
+
+        for p in ps:
+            res = data[p]
+            if 'alpha_values_z' not in res:
+                continue
+            alpha_z = np.asarray(res['alpha_values_z'], dtype=float)
+            alpha_x = np.asarray(res.get('alpha_values_x', []), dtype=float) if 'alpha_values_x' in res else None
+
+            iters = np.arange(1, len(alpha_z) + 1)
+            ax.plot(iters, alpha_z, label=f"p={p} (Z)")
+            if alpha_x is not None and alpha_x.size:
+                ax.plot(iters, alpha_x, linestyle='--', label=f"p={p} (X)")
+
+            if not dyn_plotted:
+                dynamical = 1.0 - 2.0 ** (-iters)
+                ax.plot(iters, dynamical, 'k:', label="dynamical")
+                dyn_plotted = True
+
+        ax.set_title(f"n={name}")
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel("Alpha")
+        ax.grid(True, ls="-", alpha=0.4)
+        ax.legend(fontsize=8)
+
+    for idx in range(len(codes_with_alpha), nrows * ncols):
+        fig.delaxes(axes.flat[idx])
+
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    print(f"\nAlpha comparison plot saved to {filename}")

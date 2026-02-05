@@ -6,7 +6,7 @@ from rich.console import Console
 from src.codes.bb_code import BBCodeCircuit
 from src.simulation.engine import run_simulation
 from src.noise.builder import build_decoding_matrices
-from src.utils.plotting import plot_simulation_results
+from src.utils.plotting import plot_simulation_results, plot_alpha_comparison
 from src.utils.caching import compute_cache_key, load_matrices, save_matrices
 
 
@@ -31,7 +31,7 @@ experiments = [
 
 def main():
     target_logical_errors = 30
-    max_trials = 1000000
+    max_trials = 50
     maxIter = 200
     osd_order = 7
     num_workers = 8
@@ -85,10 +85,28 @@ def main():
     # Plotting
     plot_path = f"{output_dir}/simulation_results.png"
     plot_simulation_results(results, plot_path)
+
+    alpha_plot_path = f"{output_dir}/alpha_comparison.png"
+    plot_alpha_comparison(results, alpha_plot_path)
     
     # Save results as npz
+    alpha_values = {}
+    beta_values = {}
+    for code_name, data in results.items():
+        for p, res in data.items():
+            if "alpha_values_z" in res or "alpha_values_x" in res:
+                alpha_values.setdefault(code_name, {})[p] = {
+                    "z": res.get("alpha_values_z"),
+                    "x": res.get("alpha_values_x"),
+                }
+            if "beta_z" in res or "beta_x" in res:
+                beta_values.setdefault(code_name, {})[p] = {
+                    "z": res.get("beta_z"),
+                    "x": res.get("beta_x"),
+                }
+
     results_path = f"{output_dir}/results.npz"
-    np.savez(results_path, **results)
+    np.savez(results_path, results=results, alpha_values=alpha_values, beta_values=beta_values)
     
     console.print(f"Results saved to {output_dir}")
 

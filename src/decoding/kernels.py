@@ -364,3 +364,122 @@ def minsum_decoder_full(
             break
     
     return candidateError, converged, values, final_iter
+
+
+@njit(cache=True, nogil=True, fastmath=True, parallel=True)
+def minsum_decoder_full_autoregressive(
+    H_indices, H_indptr,
+    syndrome, initialBelief,
+    maxIter, alpha_seq, alpha_len,
+    damping, clip_llr
+):
+    """
+    Fully JIT-compiled Min-Sum decoder with per-iteration alpha sequence.
+    """
+    m = len(H_indptr) - 1
+    n = len(initialBelief)
+    nnz = len(H_indices)
+
+    syndrome_sign = np.empty(m, dtype=np.float64)
+    for i in numba.prange(m):
+        syndrome_sign[i] = 1.0 - 2.0 * syndrome[i]
+
+    Q_flat = np.empty(nnz, dtype=np.float64)
+    Q_flat_old = np.empty(nnz, dtype=np.float64)
+    R_flat = np.empty(nnz, dtype=np.float64)
+    R_sum = np.zeros(n, dtype=np.float64)
+    values = np.empty(n, dtype=np.float64)
+    candidateError = np.zeros(n, dtype=np.int8)
+
+    for idx in range(nnz):
+        Q_flat[idx] = initialBelief[H_indices[idx]]
+        Q_flat_old[idx] = Q_flat[idx]
+
+    final_iter = maxIter - 1
+    converged = False
+
+    for currentIter in range(maxIter):
+        if currentIter < alpha_len:
+            current_alpha = alpha_seq[currentIter]
+        else:
+            current_alpha = alpha_seq[alpha_len - 1]
+
+        for j in numba.prange(n):
+            R_sum[j] = 0.0
+
+        for i in range(m):
+            row_start = H_indptr[i]
+            row_end = H_indptr[i + 1]
+            if row_start == row_end:
+                continue
+
+            sign_prod = syndrome_sign[i]
+            min1 = np.inf
+            min2 = np.inf
+            min1_pos = -1
+
+            for pos in range(row_start, row_end):
+                val = Q_flat[pos]
+                if val >= 0:
+                    sign_prod *= 1.0
+                else:
+                    sign_prod *= -1.0
+                abs_val = abs(val)
+                if abs_val < min1:
+                    min2 = min1
+                    min1 = abs_val
+                    min1_pos = pos
+                elif abs_val < min2:
+                    min2 = abs_val
+
+            for pos in range(row_start, row_end):
+                val = Q_flat[pos]
+                sign_j = 1.0 if val >= 0 else -1.0
+                row_sign_excl_j = sign_prod * sign_j
+                mag = min2 if pos == min1_pos else min1
+                msg = current_alpha * row_sign_excl_j * mag
+                R_flat[pos] = msg
+                R_sum[H_indices[pos]] += msg
+
+        for j in numba.prange(n):
+            values[j] = R_sum[j] + initialBelief[j]
+
+        for idx in range(nnz):
+            col = H_indices[idx]
+            q_new = values[col] - R_flat[idx]
+
+            if q_new != q_new:
+                q_new = 0.0
+            elif q_new > clip_llr:
+                q_new = clip_llr
+            elif q_new < -clip_llr:
+                q_new = -clip_llr
+
+            q_damped = damping * q_new + (1.0 - damping) * Q_flat_old[idx]
+
+            if q_damped > clip_llr:
+                q_damped = clip_llr
+            elif q_damped < -clip_llr:
+                q_damped = -clip_llr
+
+            Q_flat[idx] = q_damped
+            Q_flat_old[idx] = q_damped
+
+        for j in numba.prange(n):
+            candidateError[j] = 1 if values[j] < 0 else 0
+
+        syndrome_ok = True
+        for i in range(m):
+            s = 0
+            for idx in range(H_indptr[i], H_indptr[i + 1]):
+                s ^= candidateError[H_indices[idx]]
+            if s != syndrome[i]:
+                syndrome_ok = False
+                break
+
+        if syndrome_ok:
+            final_iter = currentIter
+            converged = True
+            break
+
+    return candidateError, converged, values, final_iter

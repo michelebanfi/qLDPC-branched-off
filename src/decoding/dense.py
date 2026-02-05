@@ -24,6 +24,11 @@ def performMinSum_Symmetric(
         if alpha <= 0:
             raise ValueError("alpha must be > 0 when alpha_mode='alvarado'")
         use_dynamic_alpha = False
+    elif alpha_mode == "alvarado-autoregressive":
+        alpha_seq = np.asarray(alpha, dtype=np.float64)
+        if alpha_seq.ndim != 1 or alpha_seq.size == 0:
+            raise ValueError("alpha must be a non-empty 1D sequence for alvarado-autoregressive")
+        use_dynamic_alpha = False
     else:
         raise ValueError(f"Unsupported alpha_mode: {alpha_mode}")
     H = np.asarray(H, dtype=np.float64)
@@ -40,7 +45,10 @@ def performMinSum_Symmetric(
     candidateError = np.zeros(n, dtype=np.int8)
     
     for currentIter in range(maxIter):
-        current_alpha = (1.0 - 2.0 ** (-(currentIter + 1))) if use_dynamic_alpha else alpha
+        if alpha_mode == "alvarado-autoregressive":
+            current_alpha = alpha_seq[currentIter] if currentIter < alpha_seq.size else alpha_seq[-1]
+        else:
+            current_alpha = (1.0 - 2.0 ** (-(currentIter + 1))) if use_dynamic_alpha else alpha
         R = minsum_core(H, Q, syndrome_sign, mask, current_alpha)
 
         if alpha_estimation and currentIter == 0:
