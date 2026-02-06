@@ -37,8 +37,8 @@ def main():
     num_workers = 8
     
     # can be "dynamical", "alvarado", "alvarado-autoregressive"
-    alpha_mode = "alvarado-autoregressive"
-    scopt = False
+    alpha_mode = "dynamical"
+    scopt = True
     cache_dir = "matrix_cache"
     
     results = {}

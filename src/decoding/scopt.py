@@ -127,10 +127,18 @@ def estimate_scopt_beta(
 
     final_0 = np.concatenate(final_0)
     final_1 = np.concatenate(final_1)
-    
+
+    final_0 = final_0[np.isfinite(final_0)]
+    final_1 = final_1[np.isfinite(final_1)]
+
+    if final_0.size == 0 or final_1.size == 0:
+        raise ValueError("No finite samples for beta estimation")
+
     # calculate the histograms and then estimate beta
-    hist_0, bin_edges = np.histogram(final_0, bins=bins, range=(final_0.min(), final_0.max()), density=True)
-    hist_1, _ = np.histogram(final_1, bins=bins, range=(final_1.min(), final_1.max()), density=True)
+    min_val = min(final_0.min(), final_1.min())
+    max_val = max(final_0.max(), final_1.max())
+    hist_0, bin_edges = np.histogram(final_0, bins=bins, range=(min_val, max_val), density=True)
+    hist_1, _ = np.histogram(final_1, bins=bins, range=(min_val, max_val), density=True)
     
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     def linear_model(x, beta):
