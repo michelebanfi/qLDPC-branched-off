@@ -1,13 +1,24 @@
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.sparse import csr_matrix, isspmatrix_csr
 
 from .kernels import minsum_core_sparse
 
 
-def _estimate_alpha_from_samples(true_0, true_1, bins=50):
+def _estimate_alpha_from_samples(true_0, true_1, bins=50, plot_path=None, title=None):
     true_0 = np.asarray(true_0, dtype=np.float64)
     true_1 = np.asarray(true_1, dtype=np.float64)
+    
+    # print(f"TRUE 1: {len(true_1)}")
+    # print(f"TRUE 0: {len(true_0)}")
+    # print(f"BINS: {bins}")
+    
+    # print(f"TRUE 1 min/max: {true_1.min():.3f}/{true_1.max():.3f}")
+    # print(f"TRUE 0 min/max: {true_0.min():.3f}/{true_0.max():.3f}")
+    
+    # print(f"Unique values in TRUE 1: {len(np.unique(true_1))}")
+    # print(f"Unique values in TRUE 0: {len(np.unique(true_0))}")
 
     true_0 = true_0[np.isfinite(true_0)]
     true_1 = true_1[np.isfinite(true_1)]
@@ -21,6 +32,18 @@ def _estimate_alpha_from_samples(true_0, true_1, bins=50):
 
     hist_0, bin_edges = np.histogram(true_0, bins=bins, range=hist_range, density=True)
     hist_1, _ = np.histogram(true_1, bins=bins, range=hist_range, density=True)
+    
+    # show the thistogram, just for debugging
+    # plt.figure(figsize=(6, 4))
+    # plt.hist(true_0, bins=bins, range=hist_range, density=True, alpha=0.5, label="true 0")
+    # plt.hist(true_1, bins=bins, range=hist_range, density=True, alpha=0.5, label="true 1")
+    # plt.xlabel("Message value")
+    # plt.ylabel("Density")
+    # plt.title("Message histograms for alpha estimation")
+    # plt.grid(True, ls="-", alpha=0.4)
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.show()
 
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     valid_indices = (hist_0 > 0) & (hist_1 > 0)
@@ -35,7 +58,27 @@ def _estimate_alpha_from_samples(true_0, true_1, bins=50):
         return alpha * x
 
     popt, _ = curve_fit(linear_model, lambdas, f_lambdas)
-    return popt[0]
+    alpha = popt[0]
+
+    fit_vals = linear_model(lambdas, alpha)
+    ss_res = np.sum((f_lambdas - fit_vals) ** 2)
+    ss_tot = np.sum((f_lambdas - np.mean(f_lambdas)) ** 2)
+    r2 = 1.0 - (ss_res / ss_tot if ss_tot > 0 else np.nan)
+
+    if plot_path is not None:
+        plt.figure(figsize=(6, 4))
+        plt.scatter(lambdas, f_lambdas, s=10, alpha=0.7, label="samples")
+        plt.plot(lambdas, fit_vals, color="#DBA142", label=f"fit (R^2={r2:.3f})")
+        plt.xlabel("Lambda")
+        plt.ylabel("log(f0/f1)")
+        plt.title(title or "Alpha estimation linear fit")
+        plt.grid(True, ls="-", alpha=0.4)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+
+    return alpha, r2
 
 
 def estimate_alpha_alvarado(
@@ -44,6 +87,9 @@ def estimate_alpha_alvarado(
     trials=5000,
     bins=50,
     rng=None,
+    plot_dir=None,
+    plot_prefix=None,
+    llrs=None
 ):
     """
     Estimate the Alvarado alpha using one Min-Sum iteration statistics.
@@ -70,8 +116,9 @@ def estimate_alpha_alvarado(
     H_indptr = H_csr.indptr.astype(np.int32, copy=False)
 
     edge_cols = H_indices
-    initial_llr = np.log((1.0 - error_rate) / error_rate)
-    initialBeliefs = np.full(n, initial_llr, dtype=np.float64)
+    # initial_llr = np.log((1.0 - error_rate) / error_rate)
+    # initialBeliefs = np.full(n, initial_llr, dtype=np.float64)
+    initialBeliefs = llrs
 
     true_0 = []
     true_1 = []
@@ -96,7 +143,18 @@ def estimate_alpha_alvarado(
     true_0 = np.concatenate(true_0)
     true_1 = np.concatenate(true_1)
 
-    return _estimate_alpha_from_samples(true_0, true_1, bins=bins)
+    plot_path = None
+    if plot_dir is not None:
+        prefix = plot_prefix or f"alvarado_p{error_rate:.6g}"
+        plot_path = f"{plot_dir}/{prefix}_alpha_fit.png"
+
+    return _estimate_alpha_from_samples(
+        true_0,
+        true_1,
+        bins=bins,
+        plot_path=plot_path,
+        title=f"Alvarado alpha fit (p={error_rate:.6g})",
+    )
 
 
 def estimate_alpha_alvarado_autoregressive(
@@ -108,6 +166,9 @@ def estimate_alpha_alvarado_autoregressive(
     damping=1.0,
     clip_llr=20.0,
     rng=None,
+    plot_dir=None,
+    plot_prefix=None,
+    llrs=None,
 ):
     """
     Estimate a per-iteration Alvarado alpha sequence using autoregressive updates.
@@ -135,10 +196,12 @@ def estimate_alpha_alvarado_autoregressive(
     H_indptr = H_csr.indptr.astype(np.int32, copy=False)
 
     edge_cols = H_indices
-    initial_llr = np.log((1.0 - error_rate) / error_rate)
-    initialBeliefs = np.full(n, initial_llr, dtype=np.float64)
+    # initial_llr = np.log((1.0 - error_rate) / error_rate)
+    # initialBeliefs = np.full(n, initial_llr, dtype=np.float64)
+    initialBeliefs = llrs
 
     alpha_values = []
+    r2_values = []
 
     for iter_idx in range(maxIter):
         true_0 = []
@@ -195,7 +258,19 @@ def estimate_alpha_alvarado_autoregressive(
         true_0 = np.concatenate(true_0)
         true_1 = np.concatenate(true_1)
 
-        alpha_k = _estimate_alpha_from_samples(true_0, true_1, bins=bins)
-        alpha_values.append(float(alpha_k))
+        plot_path = None
+        if plot_dir is not None:
+            prefix = plot_prefix or f"autoregressive_p{error_rate:.6g}"
+            plot_path = f"{plot_dir}/{prefix}_iter{iter_idx + 1}_alpha_fit.png"
 
-    return np.asarray(alpha_values, dtype=np.float64)
+        alpha_k, r2_k = _estimate_alpha_from_samples(
+            true_0,
+            true_1,
+            bins=bins,
+            plot_path=plot_path,
+            title=f"Autoregressive alpha fit (p={error_rate:.6g}, iter={iter_idx + 1})",
+        )
+        alpha_values.append(float(alpha_k))
+        r2_values.append(float(r2_k))
+
+    return np.asarray(alpha_values, dtype=np.float64), np.asarray(r2_values, dtype=np.float64)

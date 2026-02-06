@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.sparse import csr_matrix, isspmatrix_csr
 
@@ -17,6 +18,9 @@ def estimate_scopt_beta(
     damping=1.0,
     clip_llr=20.0,
     rng=None,
+    plot_dir=None,
+    plot_prefix=None,
+    llrs=None
 ):
     """
     This method is really similar to estimate_alpha_alvarado but adapted for SCOPT.
@@ -66,8 +70,10 @@ def estimate_scopt_beta(
     H_indices = H_csr.indices.astype(np.int32, copy=False)
     H_indptr = H_csr.indptr.astype(np.int32, copy=False)
 
-    initial_llr = np.log((1.0 - error_rate) / error_rate)
-    initialBeliefs = np.full(n, initial_llr, dtype=np.float64)
+    # initial_llr = np.log((1.0 - error_rate) / error_rate)
+    # initialBeliefs = np.full(n, initial_llr, dtype=np.float64)\
+    
+    initialBeliefs = llrs
 
     final_0 = []
     final_1 = []
@@ -146,5 +152,28 @@ def estimate_scopt_beta(
     
     valid = (hist_0 > 0) & (hist_1 > 0)
     log_ratio = np.log(hist_1[valid] / hist_0[valid])
-    popt, _ = curve_fit(linear_model, bin_centers[valid], log_ratio)
-    return popt[0]
+    x_vals = bin_centers[valid]
+    popt, _ = curve_fit(linear_model, x_vals, log_ratio)
+    beta = popt[0]
+
+    fit_vals = linear_model(x_vals, beta)
+    ss_res = np.sum((log_ratio - fit_vals) ** 2)
+    ss_tot = np.sum((log_ratio - np.mean(log_ratio)) ** 2)
+    r2 = 1.0 - (ss_res / ss_tot if ss_tot > 0 else np.nan)
+
+    if plot_dir is not None:
+        prefix = plot_prefix or f"beta_p{error_rate:.6g}"
+        plot_path = f"{plot_dir}/{prefix}_beta_fit.png"
+        plt.figure(figsize=(6, 4))
+        plt.scatter(x_vals, log_ratio, s=10, alpha=0.7, label="samples")
+        plt.plot(x_vals, fit_vals, color="#64B791", label=f"fit (R^2={r2:.3f})")
+        plt.xlabel("LLR")
+        plt.ylabel("log(f1/f0)")
+        plt.title(f"SCOPT beta fit (p={error_rate:.6g})")
+        plt.grid(True, ls="-", alpha=0.4)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+
+    return beta, r2

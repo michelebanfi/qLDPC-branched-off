@@ -1,4 +1,5 @@
 import logging
+import os
 import numpy as np
 from rich.console import Console
 from rich.logging import RichHandler
@@ -197,6 +198,7 @@ def run_simulation(
     precomputed_matrices=None, num_workers=None, base_seed=None,
     use_jit=True,  # New parameter to enable/disable JIT
     target_logical_errors=None, max_trials=None, scopt=False,
+    estimation_plot_dir=None,
     **bb_params
 ):
     if num_workers is None: num_workers = min(8, cpu_count())
@@ -216,6 +218,12 @@ def run_simulation(
 
     alpha_values_z = None
     alpha_values_x = None
+
+    if estimation_plot_dir is not None:
+        os.makedirs(estimation_plot_dir, exist_ok=True)
+
+    def _format_rate(rate):
+        return f"{rate:.6g}".replace(".", "p")
 
     if alpha_mode == "alvarado":
         if alvarado_alpha is None:
@@ -241,15 +249,21 @@ def run_simulation(
                 trials_x,
             )
             
-            alpha_z = estimate_alpha_alvarado(
+            alpha_z, alpha_r2_z = estimate_alpha_alvarado(
                 matrices['HdecZ'], error_rate,
                 trials=trials_z,
                 bins=alpha_estimation_bins,
+                plot_dir=estimation_plot_dir,
+                plot_prefix=f"alvarado_{_format_rate(error_rate)}_z",
+                llrs=llrs_z
             )
-            alpha_x = estimate_alpha_alvarado(
+            alpha_x, alpha_r2_x = estimate_alpha_alvarado(
                 matrices['HdecX'], error_rate,
                 trials=trials_x,
                 bins=alpha_estimation_bins,
+                plot_dir=estimation_plot_dir,
+                plot_prefix=f"alvarado_{_format_rate(error_rate)}_x",
+                llrs=llrs_x
             )
             _logger.info(
                 "Alvarado alpha (estimated) for p=%.6g: alpha_z=%.6g, alpha_x=%.6g",
@@ -259,6 +273,7 @@ def run_simulation(
             )
         elif isinstance(alvarado_alpha, (list, tuple, np.ndarray)) and len(alvarado_alpha) == 2:
             alpha_z, alpha_x = float(alvarado_alpha[0]), float(alvarado_alpha[1])
+            alpha_r2_z, alpha_r2_x = None, None
             _logger.info(
                 "Alvarado alpha (provided) for p=%.6g: alpha_z=%.6g, alpha_x=%.6g",
                 error_rate,
@@ -268,6 +283,7 @@ def run_simulation(
         else:
             alpha_z = float(alvarado_alpha)
             alpha_x = float(alvarado_alpha)
+            alpha_r2_z, alpha_r2_x = None, None
             _logger.info(
                 "Alvarado alpha (provided) for p=%.6g: alpha_z=%.6g, alpha_x=%.6g",
                 error_rate,
@@ -294,17 +310,23 @@ def run_simulation(
             trials_x,
         )
 
-        alpha_values_z = estimate_alpha_alvarado_autoregressive(
+        alpha_values_z, alpha_r2_values_z = estimate_alpha_alvarado_autoregressive(
             matrices['HdecZ'], error_rate,
             maxIter=maxIter,
             trials=trials_z,
             bins=alpha_estimation_bins,
+            plot_dir=estimation_plot_dir,
+            plot_prefix=f"autoregressive_{_format_rate(error_rate)}_z",
+            llrs=llrs_z
         )
-        alpha_values_x = estimate_alpha_alvarado_autoregressive(
+        alpha_values_x, alpha_r2_values_x = estimate_alpha_alvarado_autoregressive(
             matrices['HdecX'], error_rate,
             maxIter=maxIter,
             trials=trials_x,
             bins=alpha_estimation_bins,
+            plot_dir=estimation_plot_dir,
+            plot_prefix=f"autoregressive_{_format_rate(error_rate)}_x",
+            llrs=llrs_x
         )
 
         alpha_z = alpha_values_z
@@ -335,21 +357,27 @@ def run_simulation(
                 dynamic_trials_z,
                 dynamic_trials_x,
             )
-        beta_z = estimate_scopt_beta(
+        beta_z, beta_r2_z = estimate_scopt_beta(
             matrices['HdecZ'], error_rate,
             trials=dynamic_trials_z,
             bins=alpha_estimation_bins,
             alpha=alpha_z,
             alpha_mode=alpha_mode,
             maxIter=maxIter,
+            plot_dir=estimation_plot_dir,
+            plot_prefix=f"scopt_{_format_rate(error_rate)}_z",
+            llrs=llrs_z
         )
-        beta_x = estimate_scopt_beta(
+        beta_x, beta_r2_x = estimate_scopt_beta(
             matrices['HdecX'], error_rate,
             trials=dynamic_trials_x,
             bins=alpha_estimation_bins,
             alpha=alpha_x,
             alpha_mode=alpha_mode,
             maxIter=maxIter,
+            plot_dir=estimation_plot_dir,
+            plot_prefix=f"scopt_{_format_rate(error_rate)}_x",
+            llrs=llrs_x
         )
         _logger.info(
             "SCOPT beta (estimated) for p=%.6g: beta_z=%.6g, beta_x=%.6g",
@@ -446,8 +474,15 @@ def run_simulation(
     if alpha_mode == "alvarado-autoregressive":
         result['alpha_values_z'] = alpha_values_z
         result['alpha_values_x'] = alpha_values_x
+        result['alpha_r2_values_z'] = alpha_r2_values_z
+        result['alpha_r2_values_x'] = alpha_r2_values_x
+    if alpha_mode == "alvarado":
+        result['alpha_r2_z'] = alpha_r2_z
+        result['alpha_r2_x'] = alpha_r2_x
     if scopt:
         result['beta_z'] = beta_z
         result['beta_x'] = beta_x
+        result['beta_r2_z'] = beta_r2_z
+        result['beta_r2_x'] = beta_r2_x
 
     return result
