@@ -5,8 +5,6 @@ from scipy.sparse import csr_matrix, isspmatrix_csr
 
 from .kernels import minsum_core_sparse
 
-
-
 def estimate_scopt_beta(
     code,
     error_rate,
